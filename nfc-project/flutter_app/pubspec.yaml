@@ -1,0 +1,28 @@
+name: nfc_video_player
+description: A simple NFC video player app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  nfc_manager: ^3.3.0
+  video_player: ^2.7.0
+  chewie: ^1.7.0
+  http: ^1.1.0
+  encrypt: ^5.0.3
+
+dependency_overrides:
+  package_info_plus: ^8.0.0
+  wakelock_plus: 1.2.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
