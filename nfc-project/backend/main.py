@@ -1,41 +1,25 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String, Integer
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
 import uvicorn
 import os
 import binascii
 import secrets
 import time
-from typing import Generator
 from Crypto.Cipher import AES
-from Crypto.Hash import CMAC
-
-# Database Setup
-SQLALCHEMY_DATABASE_URL = "sqlite:///./nfc_mapping.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Video Storage Path (Not accessible via static serving)
 VIDEO_STORAGE_PATH = "secure_videos"
-if not os.path.exists(VIDEO_STORAGE_PATH):
-    os.makedirs(VIDEO_STORAGE_PATH)
+VIDEO_STORAGE_AVAILABLE = True
+try:
+    os.makedirs(VIDEO_STORAGE_PATH, exist_ok=True)
+except OSError:
+    # Cloudflare Worker runtime has no persistent local filesystem.
+    VIDEO_STORAGE_AVAILABLE = False
 
 # Access Token Store (In-memory for simplicity, use Redis in production)
 # Structure: { token: {"uid": uid, "expiry": timestamp} }
 access_tokens = {}
-
-# Models
-class NFCMapping(Base):
-    __tablename__ = "mappings"
-    uid = Column(String, primary_key=True, index=True)
-    filename = Column(String, nullable=False) # Changed from 'url' to 'filename' for local files
-    name = Column(String, nullable=True)
-
-Base.metadata.create_all(bind=engine)
 
 # Schemas
 class MappingCreate(BaseModel):
@@ -54,13 +38,20 @@ class SunVerifyRequest(BaseModel):
 # App
 app = FastAPI(title="NFC Secure Video Streamer")
 
-# Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Mapping store
+# Cloudflare Worker has no sqlite module, so use in-memory mapping.
+mapping_store: dict[str, MappingResponse] = {}
+
+
+def upsert_mapping(uid: str, filename: str, name: str | None) -> MappingResponse:
+    normalized_uid = uid.upper()
+    mapping = MappingResponse(uid=normalized_uid, filename=filename, name=name)
+    mapping_store[normalized_uid] = mapping
+    return mapping
+
+
+def get_mapping(uid: str) -> MappingResponse | None:
+    return mapping_store.get(uid.upper())
 
 # SDM Key
 SDM_KEY_HEX = "518945027BB77671C3980890A13668E5"
@@ -77,21 +68,11 @@ def decrypt_sun_message(p_hex: str, m_hex: str, key: bytes):
         raise ValueError(f"Decryption failed: {e}")
 
 @app.post("/map", response_model=MappingResponse)
-def create_mapping(mapping: MappingCreate, db: Session = Depends(get_db)):
-    db_mapping = db.query(NFCMapping).filter(NFCMapping.uid == mapping.uid).first()
-    if db_mapping:
-        db_mapping.filename = mapping.filename
-        db_mapping.name = mapping.name
-    else:
-        db_mapping = NFCMapping(uid=mapping.uid, filename=mapping.filename, name=mapping.name)
-        db.add(db_mapping)
-    
-    db.commit()
-    db.refresh(db_mapping)
-    return db_mapping
+def create_mapping(mapping: MappingCreate):
+    return upsert_mapping(mapping.uid, mapping.filename, mapping.name)
 
 @app.get("/verify")
-def verify_sun(request: Request, p: str = None, m: str = None, db: Session = Depends(get_db)):
+def verify_sun(request: Request, p: str = None, m: str = None):
     """
     Verifies SUN message and returns a temporary access token for video streaming.
     """
@@ -109,19 +90,17 @@ def verify_sun(request: Request, p: str = None, m: str = None, db: Session = Dep
         print(f"Verified SUN Message. Real UID: {uid_hex}")
         
         # 3. Lookup Content
-        mapping = db.query(NFCMapping).filter(NFCMapping.uid == uid_hex).first()
+        mapping = get_mapping(uid_hex)
         
         if not mapping:
             # Auto-register default content if new card
             # Using a sample file name, make sure this file exists in VIDEO_STORAGE_PATH
             default_filename = "butterfly.mp4" 
-            try:
-                new_map = NFCMapping(uid=uid_hex, filename=default_filename, name=f"Secure Card {uid_hex[-4:]}")
-                db.add(new_map)
-                db.commit()
-                mapping = new_map
-            except:
-                pass
+            mapping = upsert_mapping(
+                uid_hex,
+                default_filename,
+                f"Secure Card {uid_hex[-4:]}",
+            )
 
         # 4. Generate Temporary Access Token
         token = secrets.token_urlsafe(32)
@@ -170,6 +149,12 @@ def stream_video(token: str, request: Request):
         del access_tokens[token]
         raise HTTPException(status_code=403, detail="Token expired")
         
+    if not VIDEO_STORAGE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Video storage unavailable in current runtime",
+        )
+
     filename = token_data["filename"]
     file_path = os.path.join(VIDEO_STORAGE_PATH, filename)
     
@@ -216,8 +201,8 @@ def stream_video(token: str, request: Request):
         )
 
 @app.get("/mappings", response_model=list[MappingResponse])
-def list_mappings(db: Session = Depends(get_db)):
-    return db.query(NFCMapping).all()
+def list_mappings():
+    return list(mapping_store.values())
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
