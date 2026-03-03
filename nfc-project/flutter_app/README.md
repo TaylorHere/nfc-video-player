@@ -1,16 +1,56 @@
-# flutter_app
+# Flutter NFC Secure Player
 
-A new Flutter project.
+Flutter client for the Cloudflare Worker backend flow:
 
-## Getting Started
+1. NFC read URL from NTAG
+2. Call backend `/verify?p=...&m=...`
+3. Call `/stream?token=...&mode=json` to get playback descriptor
+4. Play:
+   - non-DRM file URL
+   - DRM stream (Widevine on Android / FairPlay on iOS) via Better Player
 
-This project is a starting point for a Flutter application.
+## Dependencies
 
-A few resources to get you started if this is your first Flutter project:
+- `nfc_manager`
+- `http`
+- `better_player`
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Run
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter pub get
+flutter run
+```
+
+## Important config
+
+Edit `lib/main.dart` and set:
+
+```dart
+const _defaultBackendBaseUrl = 'https://<your-worker-domain>.workers.dev';
+```
+
+This fallback is used when NFC URL is not directly pointing to `/verify` on your Worker domain.
+
+## NFC URL expectation
+
+App treats URL as secure verify link when query contains both:
+
+- `p`
+- `m`
+
+Example:
+
+```text
+https://deo.app/nfc?p=<hex>&m=<hex>
+```
+
+## DRM expectation
+
+The backend should return playback descriptor in `/stream?mode=json`:
+
+- `type` (`drm` or `file`)
+- `default_url`, `hls_url`, `dash_url`
+- `licenses.widevine`, `licenses.fairplay`, `licenses.playready`
+
+Android uses Widevine when available, iOS uses FairPlay when available.

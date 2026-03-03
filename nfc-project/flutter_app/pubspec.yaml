@@ -10,10 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
   nfc_manager: ^3.3.0
-  video_player: ^2.7.0
-  chewie: ^1.7.0
+  better_player: ^0.0.84
   http: ^1.1.0
-  encrypt: ^5.0.3
 
 dependency_overrides:
   package_info_plus: ^8.0.0
