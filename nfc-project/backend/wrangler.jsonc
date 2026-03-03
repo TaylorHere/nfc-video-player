@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nfc-video-backend",
+  "main": "main.py",
+  "compatibility_date": "2026-03-03",
+  "compatibility_flags": [
+    "python_workers",
+    "python_dedicated_snapshot"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nfc_video",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+    }
+  ],
+  "vars": {
+    "ASSET_BASE_URL": "https://assets.example.com/videos",
+    "SDM_KEY_HEX": "518945027BB77671C3980890A13668E5"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

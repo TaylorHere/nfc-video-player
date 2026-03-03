@@ -1,208 +1,359 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-import uvicorn
-import os
+import base64
 import binascii
-import secrets
+import hashlib
+import hmac
+import json
 import time
-from Crypto.Cipher import AES
+from urllib.parse import parse_qs, urlparse
 
-# Video Storage Path (Not accessible via static serving)
-VIDEO_STORAGE_PATH = "secure_videos"
-VIDEO_STORAGE_AVAILABLE = True
-try:
-    os.makedirs(VIDEO_STORAGE_PATH, exist_ok=True)
-except OSError:
-    # Cloudflare Worker runtime has no persistent local filesystem.
-    VIDEO_STORAGE_AVAILABLE = False
+from js import Response as JsResponse
+from js import Uint8Array, crypto
+from pyodide.ffi import to_js
+from workers import WorkerEntrypoint
 
-# Access Token Store (In-memory for simplicity, use Redis in production)
-# Structure: { token: {"uid": uid, "expiry": timestamp} }
-access_tokens = {}
-
-# Schemas
-class MappingCreate(BaseModel):
-    uid: str
-    filename: str
-    name: str = None
-
-class MappingResponse(BaseModel):
-    uid: str
-    filename: str
-    name: str = None
-
-class SunVerifyRequest(BaseModel):
-    sun_data: str
-
-# App
-app = FastAPI(title="NFC Secure Video Streamer")
-
-# Mapping store
-# Cloudflare Worker has no sqlite module, so use in-memory mapping.
-mapping_store: dict[str, MappingResponse] = {}
+DEFAULT_FILENAME = "butterfly.mp4"
+DEFAULT_SDM_KEY_HEX = "518945027BB77671C3980890A13668E5"
+TOKEN_TTL_SECONDS = 300
 
 
-def upsert_mapping(uid: str, filename: str, name: str | None) -> MappingResponse:
-    normalized_uid = uid.upper()
-    mapping = MappingResponse(uid=normalized_uid, filename=filename, name=name)
-    mapping_store[normalized_uid] = mapping
-    return mapping
+def _json_response(payload: dict | list, status: int = 200):
+    return JsResponse.new(
+        json.dumps(payload),
+        to_js(
+            {
+                "status": status,
+                "headers": {
+                    "content-type": "application/json; charset=utf-8",
+                    "cache-control": "no-store",
+                },
+            }
+        ),
+    )
 
 
-def get_mapping(uid: str) -> MappingResponse | None:
-    return mapping_store.get(uid.upper())
+def _text_response(message: str, status: int = 200):
+    return JsResponse.new(
+        message,
+        to_js(
+            {
+                "status": status,
+                "headers": {
+                    "content-type": "text/plain; charset=utf-8",
+                    "cache-control": "no-store",
+                },
+            }
+        ),
+    )
 
-# SDM Key
-SDM_KEY_HEX = "518945027BB77671C3980890A13668E5"
-SDM_KEY = binascii.unhexlify(SDM_KEY_HEX)
 
-def decrypt_sun_message(p_hex: str, m_hex: str, key: bytes):
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(raw: str) -> bytes:
+    padding = "=" * (-len(raw) % 4)
+    return base64.urlsafe_b64decode(raw + padding)
+
+
+def _js_to_py(value):
+    if hasattr(value, "to_py"):
+        return value.to_py()
+    return value
+
+
+def _field(row, key: str, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _build_asset_url(filename: str, asset_base_url: str | None) -> str:
+    if filename.startswith("http://") or filename.startswith("https://"):
+        return filename
+    if asset_base_url is not None:
+        asset_base_url = str(asset_base_url).strip()
+    if not asset_base_url:
+        raise ValueError("ASSET_BASE_URL is not configured")
+    return f"{asset_base_url.rstrip('/')}/{filename.lstrip('/')}"
+
+
+async def _decrypt_sun_payload(p_hex: str, key: bytes) -> bytes:
+    encrypted = binascii.unhexlify(p_hex)
+    if not encrypted or len(encrypted) % 16 != 0:
+        raise ValueError("Invalid p payload length")
+
+    key_u8 = Uint8Array.new(len(key))
+    for index, value in enumerate(key):
+        key_u8[index] = value
+
+    enc_u8 = Uint8Array.new(len(encrypted))
+    for index, value in enumerate(encrypted):
+        enc_u8[index] = value
+
+    iv_u8 = Uint8Array.new(16)
+    crypto_key = await crypto.subtle.importKey(
+        "raw",
+        key_u8,
+        to_js({"name": "AES-CBC"}),
+        False,
+        to_js(["decrypt"]),
+    )
+    decrypted_buffer = await crypto.subtle.decrypt(
+        to_js({"name": "AES-CBC", "iv": iv_u8}),
+        crypto_key,
+        enc_u8,
+    )
+    decrypted_u8 = Uint8Array.new(decrypted_buffer)
     try:
-        enc_data = binascii.unhexlify(p_hex)
-        iv = bytes(16)
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = cipher.decrypt(enc_data)
-        return decrypted
-    except Exception as e:
-        raise ValueError(f"Decryption failed: {e}")
+        return bytes(decrypted_u8.to_py())
+    except Exception:
+        return bytes(int(decrypted_u8[i]) for i in range(decrypted_u8.length))
 
-@app.post("/map", response_model=MappingResponse)
-def create_mapping(mapping: MappingCreate):
-    return upsert_mapping(mapping.uid, mapping.filename, mapping.name)
 
-@app.get("/verify")
-def verify_sun(request: Request, p: str = None, m: str = None):
-    """
-    Verifies SUN message and returns a temporary access token for video streaming.
-    """
-    if not p or not m:
-        return {"success": False, "error": "Missing p or m parameters"}
-        
-    try:
-        # 1. Verify / Decrypt
-        decrypted = decrypt_sun_message(p, m, SDM_KEY)
-        
-        # 2. Extract UID
-        uid_bytes = decrypted[0:7]
-        uid_hex = binascii.hexlify(uid_bytes).decode('utf-8').upper()
-        
-        print(f"Verified SUN Message. Real UID: {uid_hex}")
-        
-        # 3. Lookup Content
-        mapping = get_mapping(uid_hex)
-        
-        if not mapping:
-            # Auto-register default content if new card
-            # Using a sample file name, make sure this file exists in VIDEO_STORAGE_PATH
-            default_filename = "butterfly.mp4" 
-            mapping = upsert_mapping(
-                uid_hex,
-                default_filename,
-                f"Secure Card {uid_hex[-4:]}",
+class Default(WorkerEntrypoint):
+    def _token_secret(self) -> bytes:
+        secret = getattr(self.env, "TOKEN_SECRET", None)
+        if not secret:
+            # Development fallback. Set TOKEN_SECRET in production.
+            secret = "dev-token-secret-change-me"
+        return str(secret).encode("utf-8")
+
+    def _sign(self, payload: bytes) -> bytes:
+        return hmac.new(self._token_secret(), payload, hashlib.sha256).digest()
+
+    def _issue_token(self, uid: str, filename: str) -> str:
+        payload = {
+            "uid": uid,
+            "filename": filename,
+            "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+        }
+        payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
+        signature = self._sign(payload_raw)
+        return f"{_b64url_encode(payload_raw)}.{_b64url_encode(signature)}"
+
+    def _validate_token(self, token: str) -> dict | None:
+        try:
+            payload_part, signature_part = token.split(".", 1)
+            payload_raw = _b64url_decode(payload_part)
+            signature_raw = _b64url_decode(signature_part)
+        except Exception:
+            return None
+
+        expected_sig = self._sign(payload_raw)
+        if not hmac.compare_digest(signature_raw, expected_sig):
+            return None
+
+        try:
+            payload = json.loads(payload_raw.decode("utf-8"))
+        except Exception:
+            return None
+
+        expires_at = int(payload.get("exp", 0))
+        if int(time.time()) > expires_at:
+            return None
+        return payload
+
+    async def _ensure_schema(self):
+        if getattr(self, "_schema_ready", False):
+            return
+        await self.env.DB.prepare(
+            """
+            CREATE TABLE IF NOT EXISTS mappings (
+                uid TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                name TEXT,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            )
+            """
+        ).run()
+        self._schema_ready = True
+
+    async def _upsert_mapping(self, uid: str, filename: str, name: str | None) -> dict:
+        uid_normalized = uid.upper()
+        await self.env.DB.prepare(
+            """
+            INSERT INTO mappings (uid, filename, name, updated_at)
+            VALUES (?, ?, ?, strftime('%s', 'now'))
+            ON CONFLICT(uid) DO UPDATE SET
+                filename = excluded.filename,
+                name = excluded.name,
+                updated_at = strftime('%s', 'now')
+            """
+        ).bind(uid_normalized, filename, name).run()
+        return {"uid": uid_normalized, "filename": filename, "name": name}
+
+    async def _get_mapping(self, uid: str) -> dict | None:
+        uid_normalized = uid.upper()
+        result = (
+            await self.env.DB.prepare(
+                "SELECT uid, filename, name FROM mappings WHERE uid = ? LIMIT 1"
+            )
+            .bind(uid_normalized)
+            .all()
+        )
+        rows = _js_to_py(result.results)
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "uid": str(_field(row, "uid", uid_normalized)).upper(),
+            "filename": str(_field(row, "filename", DEFAULT_FILENAME)),
+            "name": _field(row, "name"),
+        }
+
+    async def _list_mappings(self) -> list[dict]:
+        result = await self.env.DB.prepare(
+            "SELECT uid, filename, name FROM mappings ORDER BY updated_at DESC"
+        ).all()
+        rows = _js_to_py(result.results) or []
+        mappings: list[dict] = []
+        for row in rows:
+            mappings.append(
+                {
+                    "uid": str(_field(row, "uid", "")).upper(),
+                    "filename": str(_field(row, "filename", DEFAULT_FILENAME)),
+                    "name": _field(row, "name"),
+                }
+            )
+        return mappings
+
+    async def _handle_map(self, request):
+        try:
+            body = await request.text()
+            payload = json.loads(body) if body else {}
+        except Exception:
+            return _json_response({"error": "Invalid JSON body"}, status=400)
+
+        uid = str(payload.get("uid", "")).strip().upper()
+        filename = str(payload.get("filename", "")).strip()
+        name = payload.get("name")
+        if name is not None:
+            name = str(name)
+
+        if not uid or not filename:
+            return _json_response({"error": "uid and filename are required"}, status=400)
+
+        mapping = await self._upsert_mapping(uid, filename, name)
+        return _json_response(mapping)
+
+    async def _handle_verify(self, request):
+        parsed_url = urlparse(str(request.url))
+        params = parse_qs(parsed_url.query)
+        p = params.get("p", [None])[0]
+        m = params.get("m", [None])[0]
+        if not p or not m:
+            return _json_response(
+                {"success": False, "error": "Missing p or m parameters"},
+                status=400,
             )
 
-        # 4. Generate Temporary Access Token
-        token = secrets.token_urlsafe(32)
-        access_tokens[token] = {
-            "uid": uid_hex,
-            "filename": mapping.filename if mapping else "butterfly.mp4",
-            "expiry": time.time() + 300 # Valid for 5 minutes
-        }
-        
-        # Construct the streaming URL with the token
-        # request.base_url automatically gets the correct scheme/host/port
-        stream_url = f"{request.base_url}stream?token={token}"
-
-        return {"success": True, "video_url": stream_url, "uid": uid_hex}
-        
-    except Exception as e:
-        print(f"Verify Error: {e}")
-        return {"success": False, "error": "Invalid Signature or Key"}
-
-def range_stream_response(file_obj, start, end, file_size):
-    """Generator for streaming file chunks"""
-    chunk_size = 1024 * 1024 # 1MB chunks
-    file_obj.seek(start)
-    remaining = end - start + 1
-    
-    while remaining > 0:
-        read_size = min(chunk_size, remaining)
-        data = file_obj.read(read_size)
-        if not data:
-            break
-        remaining -= len(data)
-        yield data
-
-@app.get("/stream")
-def stream_video(token: str, request: Request):
-    """
-    Secure video streaming endpoint. Only works with valid token.
-    Supports HTTP Range requests for seeking.
-    """
-    # 1. Validate Token
-    if token not in access_tokens:
-        raise HTTPException(status_code=403, detail="Invalid or expired token")
-    
-    token_data = access_tokens[token]
-    if time.time() > token_data["expiry"]:
-        del access_tokens[token]
-        raise HTTPException(status_code=403, detail="Token expired")
-        
-    if not VIDEO_STORAGE_AVAILABLE:
-        raise HTTPException(
-            status_code=503,
-            detail="Video storage unavailable in current runtime",
-        )
-
-    filename = token_data["filename"]
-    file_path = os.path.join(VIDEO_STORAGE_PATH, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Video file not found on server")
-
-    file_size = os.path.getsize(file_path)
-    
-    # 2. Handle Range Header
-    range_header = request.headers.get("range")
-    
-    if range_header:
-        # Parse "bytes=0-1024"
+        sdm_key_hex = str(getattr(self.env, "SDM_KEY_HEX", DEFAULT_SDM_KEY_HEX)).strip()
         try:
-            start_str, end_str = range_header.replace("bytes=", "").split("-")
-            start = int(start_str)
-            end = int(end_str) if end_str else file_size - 1
-        except ValueError:
-            start = 0
-            end = file_size - 1
-            
-        if start >= file_size:
-             raise HTTPException(status_code=416, detail="Range not satisfiable")
-             
-        content_length = end - start + 1
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(content_length),
-            "Content-Type": "video/mp4",
-        }
-        
-        return StreamingResponse(
-            range_stream_response(open(file_path, "rb"), start, end, file_size),
-            status_code=206,
-            headers=headers,
-            media_type="video/mp4"
-        )
-    else:
-        # Full file
-        return StreamingResponse(
-            open(file_path, "rb"),
-            media_type="video/mp4"
+            sdm_key = binascii.unhexlify(sdm_key_hex)
+            if len(sdm_key) != 16:
+                raise ValueError("SDM key must be 16 bytes (32 hex chars)")
+
+            decrypted = await _decrypt_sun_payload(p, sdm_key)
+            if len(decrypted) < 7:
+                raise ValueError("Decrypted payload too short")
+            uid_hex = binascii.hexlify(decrypted[0:7]).decode("utf-8").upper()
+
+            # Keep m required for protocol compatibility.
+            mapping = await self._get_mapping(uid_hex)
+            if not mapping:
+                mapping = await self._upsert_mapping(
+                    uid_hex,
+                    DEFAULT_FILENAME,
+                    f"Secure Card {uid_hex[-4:]}",
+                )
+
+            token = self._issue_token(uid_hex, mapping["filename"])
+            origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            stream_url = f"{origin}/stream?token={token}"
+            return _json_response(
+                {
+                    "success": True,
+                    "video_url": stream_url,
+                    "uid": uid_hex,
+                }
+            )
+        except Exception:
+            return _json_response(
+                {"success": False, "error": "Invalid Signature or Key"},
+                status=400,
+            )
+
+    async def _handle_stream(self, request):
+        parsed_url = urlparse(str(request.url))
+        params = parse_qs(parsed_url.query)
+        token = params.get("token", [None])[0]
+        if not token:
+            return _json_response({"error": "Missing token"}, status=400)
+
+        token_payload = self._validate_token(token)
+        if not token_payload:
+            return _json_response({"error": "Invalid or expired token"}, status=403)
+
+        filename = str(token_payload.get("filename", "")).strip()
+        if not filename:
+            return _json_response({"error": "Invalid token payload"}, status=403)
+
+        try:
+            asset_base_url = getattr(self.env, "ASSET_BASE_URL", None)
+            video_url = _build_asset_url(filename, asset_base_url)
+        except Exception:
+            return _json_response(
+                {"error": "ASSET_BASE_URL is not configured"},
+                status=500,
+            )
+
+        return JsResponse.new(
+            "",
+            to_js(
+                {
+                    "status": 302,
+                    "headers": {
+                        "location": video_url,
+                        "cache-control": "no-store",
+                    },
+                }
+            ),
         )
 
-@app.get("/mappings", response_model=list[MappingResponse])
-def list_mappings():
-    return list(mapping_store.values())
+    async def fetch(self, request):
+        method = str(request.method).upper()
+        parsed_url = urlparse(str(request.url))
+        path = parsed_url.path or "/"
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+        if path == "/health":
+            return _json_response({"ok": True, "runtime": "cloudflare-worker-python"})
+
+        if path == "/map":
+            if method != "POST":
+                return _text_response("Method Not Allowed", status=405)
+            await self._ensure_schema()
+            return await self._handle_map(request)
+
+        if path == "/verify":
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            await self._ensure_schema()
+            return await self._handle_verify(request)
+
+        if path == "/stream":
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            return await self._handle_stream(request)
+
+        if path == "/mappings":
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            await self._ensure_schema()
+            mappings = await self._list_mappings()
+            return _json_response(mappings)
+
+        return _text_response("Not Found", status=404)
