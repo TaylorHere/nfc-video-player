@@ -20,6 +20,7 @@ CDN_URL_TTL_SECONDS = 120
 PLAYBACK_SESSION_TTL_SECONDS = 300
 MEDIA_CACHE_SECONDS = 3600
 HLS_FAIRPLAY_LICENSE_PLACEHOLDER = "__FAIRPLAY_LICENSE_URL__"
+HLS_FAIRPLAY_CERTIFICATE_PLACEHOLDER = "__FAIRPLAY_CERTIFICATE_URL__"
 HLS_URI_ATTR_PATTERN = re.compile(r'URI="([^"]+)"')
 
 
@@ -132,6 +133,21 @@ def _relative_key(base_dir: str, relative_uri: str) -> str:
     else:
         joined = relative_uri
     return _safe_object_key(posixpath.normpath(joined))
+
+
+def _normalize_string_dict(raw_value) -> dict[str, str]:
+    if not isinstance(raw_value, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw_value.items():
+        if key is None or value is None:
+            continue
+        header_name = str(key).strip()
+        header_value = str(value).strip()
+        if not header_name:
+            continue
+        normalized[header_name] = header_value
+    return normalized
 
 
 async def _decrypt_sun_payload(p_hex: str, key: bytes) -> bytes:
@@ -283,6 +299,8 @@ class Default(WorkerEntrypoint):
             "hls_manifest": None,
             "dash_manifest": None,
             "licenses": {},
+            "certificates": {},
+            "headers": {},
         }
 
     def _normalize_drm_config(self, drm_payload) -> dict:
@@ -321,7 +339,50 @@ class Default(WorkerEntrypoint):
                     raise ValueError(f"drm license url must be absolute: {drm_type}")
                 licenses[drm_type] = value
 
+        certificates: dict[str, str] = {}
+        raw_certificates = drm_payload.get("certificates")
+        if isinstance(raw_certificates, dict):
+            for drm_type in ("widevine", "fairplay", "playready"):
+                value = raw_certificates.get(drm_type)
+                if not value:
+                    continue
+                value = str(value).strip()
+                if not _is_absolute_http_url(value):
+                    raise ValueError(f"drm certificate url must be absolute: {drm_type}")
+                certificates[drm_type] = value
+
+        legacy_certificate_map = {
+            "widevine_certificate_url": "widevine",
+            "fairplay_certificate_url": "fairplay",
+            "playready_certificate_url": "playready",
+        }
+        for legacy_key, drm_type in legacy_certificate_map.items():
+            value = drm_payload.get(legacy_key)
+            if not value:
+                continue
+            value = str(value).strip()
+            if not _is_absolute_http_url(value):
+                raise ValueError(f"drm certificate url must be absolute: {drm_type}")
+            certificates[drm_type] = value
+
+        headers: dict[str, dict[str, str]] = {}
+        raw_headers = drm_payload.get("headers")
+        if isinstance(raw_headers, dict):
+            for drm_type in ("widevine", "fairplay", "playready"):
+                header_map = _normalize_string_dict(raw_headers.get(drm_type))
+                if header_map:
+                    headers[drm_type] = header_map
+
+        raw_legacy_headers = drm_payload.get("license_headers")
+        if isinstance(raw_legacy_headers, dict):
+            for drm_type in ("widevine", "fairplay", "playready"):
+                header_map = _normalize_string_dict(raw_legacy_headers.get(drm_type))
+                if header_map:
+                    headers[drm_type] = header_map
+
         config["licenses"] = licenses
+        config["certificates"] = certificates
+        config["headers"] = headers
         enabled_flag = drm_payload.get("enabled")
         if enabled_flag is None:
             enabled = bool(config["hls_manifest"] or config["dash_manifest"])
@@ -448,6 +509,9 @@ class Default(WorkerEntrypoint):
     def _license_path(self, session_token: str, drm_type: str) -> str:
         return f"/license/{quote(session_token, safe='')}/{quote(drm_type, safe='')}"
 
+    def _certificate_path(self, session_token: str, drm_type: str) -> str:
+        return f"/certificate/{quote(session_token, safe='')}/{quote(drm_type, safe='')}"
+
     def _derive_media_prefix(self, mapping: dict) -> str:
         drm = mapping.get("drm") or {}
         for candidate in (
@@ -466,12 +530,22 @@ class Default(WorkerEntrypoint):
 
     def _issue_playback_session(self, uid: str, mapping: dict) -> str:
         drm = mapping.get("drm") or self._default_drm_config()
+        merged_headers: dict[str, dict[str, str]] = {}
+        configured_headers = drm.get("headers") or {}
+        for drm_type in ("widevine", "fairplay", "playready"):
+            headers = self._default_license_headers(drm_type)
+            headers.update(_normalize_string_dict(configured_headers.get(drm_type)))
+            if headers:
+                merged_headers[drm_type] = headers
+
         payload = {
             "uid": uid,
             "prefix": self._derive_media_prefix(mapping),
             "hls": drm.get("hls_manifest"),
             "dash": drm.get("dash_manifest"),
             "lic": drm.get("licenses", {}),
+            "cer": drm.get("certificates", {}),
+            "hdr": merged_headers,
             "exp": int(time.time()) + self._playback_ttl_seconds(),
         }
         return self._issue_signed_payload(payload, self._playback_secret())
@@ -490,10 +564,37 @@ class Default(WorkerEntrypoint):
             f"{origin}{self._play_path(session_token, dash_manifest)}" if dash_manifest else None
         )
 
+        drm_systems: dict[str, dict] = {}
         license_urls: dict[str, str] = {}
-        for drm_type, source_url in (drm.get("licenses") or {}).items():
-            if source_url:
-                license_urls[drm_type] = f"{origin}{self._license_path(session_token, drm_type)}"
+        configured_license_urls = drm.get("licenses") or {}
+        configured_certificate_urls = drm.get("certificates") or {}
+        configured_headers = drm.get("headers") or {}
+
+        for drm_type in ("widevine", "fairplay", "playready"):
+            upstream_license = configured_license_urls.get(drm_type) or self._default_license_url(
+                drm_type
+            )
+            upstream_certificate = configured_certificate_urls.get(
+                drm_type
+            ) or self._default_certificate_url(drm_type)
+            header_map = self._default_license_headers(drm_type)
+            header_map.update(_normalize_string_dict(configured_headers.get(drm_type)))
+
+            system: dict[str, object] = {}
+            if upstream_license:
+                proxy_license_url = f"{origin}{self._license_path(session_token, drm_type)}"
+                system["license_url"] = proxy_license_url
+                license_urls[drm_type] = proxy_license_url
+            if upstream_certificate:
+                proxy_certificate_url = (
+                    f"{origin}{self._certificate_path(session_token, drm_type)}"
+                )
+                system["certificate_url"] = proxy_certificate_url
+            if header_map:
+                system["headers"] = header_map
+
+            if system:
+                drm_systems[drm_type] = system
 
         default_url = hls_url or dash_url
         return {
@@ -502,6 +603,7 @@ class Default(WorkerEntrypoint):
             "hls_url": hls_url,
             "dash_url": dash_url,
             "licenses": license_urls,
+            "drm": drm_systems,
             "session_token": session_token,
         }
 
@@ -520,6 +622,11 @@ class Default(WorkerEntrypoint):
         if uri == HLS_FAIRPLAY_LICENSE_PLACEHOLDER and isinstance(licenses, dict):
             if licenses.get("fairplay"):
                 return self._license_path(session_token, "fairplay")
+
+        certificates = playback_claims.get("cer") if isinstance(playback_claims, dict) else {}
+        if uri == HLS_FAIRPLAY_CERTIFICATE_PLACEHOLDER and isinstance(certificates, dict):
+            if certificates.get("fairplay"):
+                return self._certificate_path(session_token, "fairplay")
 
         parsed = urlparse(uri)
         if parsed.scheme in ("http", "https", "skd", "data"):
@@ -691,6 +798,41 @@ class Default(WorkerEntrypoint):
             return None
         return value
 
+    def _default_certificate_url(self, drm_type: str) -> str | None:
+        env_map = {
+            "widevine": "DRM_WIDEVINE_CERTIFICATE_URL",
+            "fairplay": "DRM_FAIRPLAY_CERTIFICATE_URL",
+            "playready": "DRM_PLAYREADY_CERTIFICATE_URL",
+        }
+        env_key = env_map.get(drm_type)
+        if not env_key:
+            return None
+        value = getattr(self.env, env_key, None)
+        if not value:
+            return None
+        value = str(value).strip()
+        if not _is_absolute_http_url(value):
+            return None
+        return value
+
+    def _default_license_headers(self, drm_type: str) -> dict[str, str]:
+        env_map = {
+            "widevine": "DRM_WIDEVINE_LICENSE_HEADERS_JSON",
+            "fairplay": "DRM_FAIRPLAY_LICENSE_HEADERS_JSON",
+            "playready": "DRM_PLAYREADY_LICENSE_HEADERS_JSON",
+        }
+        env_key = env_map.get(drm_type)
+        if not env_key:
+            return {}
+        raw = getattr(self.env, env_key, None)
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(str(raw))
+        except Exception:
+            return {}
+        return _normalize_string_dict(parsed)
+
     async def _handle_map(self, request):
         try:
             body = await request.text()
@@ -715,7 +857,13 @@ class Default(WorkerEntrypoint):
                 "widevine_license_url",
                 "fairplay_license_url",
                 "playready_license_url",
+                "widevine_certificate_url",
+                "fairplay_certificate_url",
+                "playready_certificate_url",
                 "licenses",
+                "certificates",
+                "headers",
+                "license_headers",
                 "enabled",
             ):
                 if key in payload:
@@ -942,20 +1090,78 @@ class Default(WorkerEntrypoint):
             return _json_response({"error": "Invalid license URL"}, status=500)
 
         proxy_headers: dict[str, str] = {}
-        content_type = request.headers.get("content-type")
-        if content_type:
-            proxy_headers["content-type"] = str(content_type)
+        raw_header_map = claims.get("hdr")
+        if isinstance(raw_header_map, dict):
+            proxy_headers.update(_normalize_string_dict(raw_header_map.get(drm_type)))
 
         # Optional auth header for providers that expect static auth.
         static_auth = getattr(self.env, "DRM_LICENSE_AUTHORIZATION", None)
         if static_auth:
             proxy_headers["authorization"] = str(static_auth)
 
+        content_type = request.headers.get("content-type")
+        if content_type and "content-type" not in {
+            header_name.lower() for header_name in proxy_headers.keys()
+        }:
+            proxy_headers["content-type"] = str(content_type)
+
         fetch_options = {"method": method, "headers": proxy_headers}
         if method == "POST":
             fetch_options["body"] = await request.arrayBuffer()
 
         upstream = await js_fetch(str(upstream_url), to_js(fetch_options))
+        status = int(upstream.status)
+        response_headers = _cors_headers()
+
+        upstream_content_type = upstream.headers.get("content-type")
+        if upstream_content_type:
+            response_headers["content-type"] = str(upstream_content_type)
+
+        if method == "HEAD":
+            body = ""
+        else:
+            body = await upstream.arrayBuffer()
+
+        return JsResponse.new(
+            body,
+            to_js({"status": status, "headers": response_headers}),
+        )
+
+    async def _handle_certificate_proxy(self, request, session_token: str, drm_type: str):
+        method = str(request.method).upper()
+        if method == "OPTIONS":
+            return JsResponse.new("", to_js({"status": 204, "headers": _cors_headers()}))
+        if method not in ("GET", "HEAD"):
+            return _text_response("Method Not Allowed", status=405)
+
+        claims = self._validate_playback_session(session_token)
+        if not claims:
+            return _json_response({"error": "Invalid or expired playback session"}, status=403)
+
+        drm_type = drm_type.strip().lower()
+        certificate_map = claims.get("cer")
+        if not isinstance(certificate_map, dict):
+            certificate_map = {}
+        upstream_url = certificate_map.get(drm_type) or self._default_certificate_url(drm_type)
+        if not upstream_url:
+            return _json_response({"error": f"No {drm_type} certificate URL configured"}, status=404)
+
+        if not _is_absolute_http_url(str(upstream_url)):
+            return _json_response({"error": "Invalid certificate URL"}, status=500)
+
+        proxy_headers: dict[str, str] = {}
+        raw_header_map = claims.get("hdr")
+        if isinstance(raw_header_map, dict):
+            proxy_headers.update(_normalize_string_dict(raw_header_map.get(drm_type)))
+
+        static_auth = getattr(self.env, "DRM_LICENSE_AUTHORIZATION", None)
+        if static_auth:
+            proxy_headers["authorization"] = str(static_auth)
+
+        upstream = await js_fetch(
+            str(upstream_url),
+            to_js({"method": method, "headers": proxy_headers}),
+        )
         status = int(upstream.status)
         response_headers = _cors_headers()
 
@@ -1024,6 +1230,15 @@ class Default(WorkerEntrypoint):
             session_token = unquote(parts[0])
             drm_type = unquote(parts[1])
             return await self._handle_license_proxy(request, session_token, drm_type)
+
+        if path.startswith("/certificate/"):
+            rest = path[len("/certificate/") :]
+            parts = rest.split("/", 1)
+            if len(parts) != 2:
+                return _json_response({"error": "Invalid certificate path"}, status=400)
+            session_token = unquote(parts[0])
+            drm_type = unquote(parts[1])
+            return await self._handle_certificate_proxy(request, session_token, drm_type)
 
         if path == "/mappings":
             if method != "GET":

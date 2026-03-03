@@ -51,6 +51,9 @@ The backend should return playback descriptor in `/stream?mode=json`:
 
 - `type` (`drm` or `file`)
 - `default_url`, `hls_url`, `dash_url`
-- `licenses.widevine`, `licenses.fairplay`, `licenses.playready`
+- `licenses.widevine`, `licenses.fairplay`, `licenses.playready` (legacy fallback)
+- `drm.widevine.license_url`, `drm.widevine.headers`
+- `drm.fairplay.license_url`, `drm.fairplay.certificate_url`, `drm.fairplay.headers`
+- `drm.playready.license_url`, `drm.playready.headers`
 
 Android uses Widevine when available, iOS uses FairPlay when available.

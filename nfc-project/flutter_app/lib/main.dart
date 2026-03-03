@@ -21,6 +21,7 @@ class PlaybackDescriptor {
   final String? hlsUrl;
   final String? dashUrl;
   final Map<String, String> licenses;
+  final Map<String, DrmSystemConfig> drmSystems;
   final String? sessionToken;
 
   const PlaybackDescriptor({
@@ -29,6 +30,7 @@ class PlaybackDescriptor {
     required this.hlsUrl,
     required this.dashUrl,
     required this.licenses,
+    required this.drmSystems,
     this.sessionToken,
   });
 
@@ -43,8 +45,11 @@ class PlaybackDescriptor {
       hlsUrl: null,
       dashUrl: null,
       licenses: const {},
+      drmSystems: const {},
     );
   }
+
+  DrmSystemConfig? system(String name) => drmSystems[name.toLowerCase()];
 
   factory PlaybackDescriptor.fromMap(Map<String, dynamic> map) {
     final rawLicenses = map['licenses'];
@@ -57,13 +62,65 @@ class PlaybackDescriptor {
       }
     }
 
+    final systems = <String, DrmSystemConfig>{};
+    final rawSystems = map['drm'];
+    if (rawSystems is Map) {
+      for (final entry in rawSystems.entries) {
+        final key = entry.key.toString().toLowerCase();
+        final value = entry.value;
+        if (value is! Map) continue;
+        systems[key] = DrmSystemConfig.fromMap(Map<String, dynamic>.from(value));
+      }
+    }
+
+    for (final entry in licenses.entries) {
+      systems.putIfAbsent(
+        entry.key,
+        () => DrmSystemConfig(licenseUrl: entry.value, certificateUrl: null, headers: const {}),
+      );
+    }
+
     return PlaybackDescriptor(
       type: (map['type'] ?? 'file').toString(),
       defaultUrl: map['default_url']?.toString(),
       hlsUrl: map['hls_url']?.toString(),
       dashUrl: map['dash_url']?.toString(),
       licenses: licenses,
+      drmSystems: systems,
       sessionToken: map['session_token']?.toString(),
+    );
+  }
+}
+
+class DrmSystemConfig {
+  final String? licenseUrl;
+  final String? certificateUrl;
+  final Map<String, String> headers;
+
+  const DrmSystemConfig({
+    required this.licenseUrl,
+    required this.certificateUrl,
+    required this.headers,
+  });
+
+  bool get hasLicense => licenseUrl != null && licenseUrl!.isNotEmpty;
+
+  factory DrmSystemConfig.fromMap(Map<String, dynamic> map) {
+    final rawHeaders = map['headers'];
+    final headers = <String, String>{};
+    if (rawHeaders is Map) {
+      for (final entry in rawHeaders.entries) {
+        final key = entry.key.toString().trim();
+        final value = entry.value?.toString() ?? '';
+        if (key.isEmpty) continue;
+        headers[key] = value;
+      }
+    }
+
+    return DrmSystemConfig(
+      licenseUrl: map['license_url']?.toString(),
+      certificateUrl: map['certificate_url']?.toString(),
+      headers: headers,
     );
   }
 }
@@ -659,13 +716,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
     final platform = defaultTargetPlatform;
     if (platform == TargetPlatform.android) {
-      final widevineLicense = descriptor.licenses['widevine'];
+      final widevineConfig =
+          descriptor.system('widevine') ??
+          DrmSystemConfig(
+            licenseUrl: descriptor.licenses['widevine'],
+            certificateUrl: null,
+            headers: const {},
+          );
       final mediaUrl = descriptor.dashUrl ?? descriptor.hlsUrl ?? descriptor.defaultUrl;
       if (mediaUrl != null && mediaUrl.isNotEmpty) {
-        final drmConfig = (widevineLicense != null && widevineLicense.isNotEmpty)
+        final drmConfig = (widevineConfig.hasLicense)
             ? BetterPlayerDrmConfiguration(
                 drmType: BetterPlayerDrmType.widevine,
-                licenseUrl: widevineLicense,
+                licenseUrl: widevineConfig.licenseUrl!,
+                headers: widevineConfig.headers.isEmpty ? null : widevineConfig.headers,
               )
             : null;
         return _PlayableSource(url: mediaUrl, drmConfiguration: drmConfig);
@@ -673,13 +737,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
 
     if (platform == TargetPlatform.iOS) {
-      final fairplayLicense = descriptor.licenses['fairplay'];
+      final fairplayConfig =
+          descriptor.system('fairplay') ??
+          DrmSystemConfig(
+            licenseUrl: descriptor.licenses['fairplay'],
+            certificateUrl: null,
+            headers: const {},
+          );
       final mediaUrl = descriptor.hlsUrl ?? descriptor.defaultUrl ?? descriptor.dashUrl;
       if (mediaUrl != null && mediaUrl.isNotEmpty) {
-        final drmConfig = (fairplayLicense != null && fairplayLicense.isNotEmpty)
+        final drmConfig = (fairplayConfig.hasLicense)
             ? BetterPlayerDrmConfiguration(
                 drmType: BetterPlayerDrmType.fairplay,
-                licenseUrl: fairplayLicense,
+                licenseUrl: fairplayConfig.licenseUrl!,
+                certificateUrl: fairplayConfig.certificateUrl,
+                headers: fairplayConfig.headers.isEmpty ? null : fairplayConfig.headers,
               )
             : null;
         return _PlayableSource(url: mediaUrl, drmConfiguration: drmConfig);

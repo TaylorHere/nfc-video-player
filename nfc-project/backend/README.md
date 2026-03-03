@@ -49,6 +49,14 @@ In `wrangler.jsonc`:
   - `vars.DRM_WIDEVINE_LICENSE_URL`
   - `vars.DRM_FAIRPLAY_LICENSE_URL`
   - `vars.DRM_PLAYREADY_LICENSE_URL`
+- Optional default DRM certificate URLs:
+  - `vars.DRM_WIDEVINE_CERTIFICATE_URL`
+  - `vars.DRM_FAIRPLAY_CERTIFICATE_URL`
+  - `vars.DRM_PLAYREADY_CERTIFICATE_URL`
+- Optional default DRM license headers (JSON string):
+  - `vars.DRM_WIDEVINE_LICENSE_HEADERS_JSON`
+  - `vars.DRM_FAIRPLAY_LICENSE_HEADERS_JSON`
+  - `vars.DRM_PLAYREADY_LICENSE_HEADERS_JSON`
 
 Secrets:
 
@@ -116,6 +124,17 @@ Then set:
       "widevine": "https://license.example.com/widevine",
       "fairplay": "https://license.example.com/fairplay",
       "playready": "https://license.example.com/playready"
+    },
+    "certificates": {
+      "fairplay": "https://license.example.com/fairplay.cer"
+    },
+    "headers": {
+      "widevine": {
+        "x-drm-client": "nfc-app"
+      },
+      "fairplay": {
+        "x-drm-client": "nfc-app-ios"
+      }
     }
   }
 }
@@ -133,6 +152,7 @@ Then set:
 - `GET|HEAD /cdn/<object-key>?exp=<unix_ts>&sig=<signature>`
 - `GET|HEAD /play/<session-token>/<object-key>` (DRM-friendly CDN path)
 - `POST|GET|HEAD|OPTIONS /license/<session-token>/<widevine|fairplay|playready>`
+- `GET|HEAD|OPTIONS /certificate/<session-token>/<widevine|fairplay|playready>`
 - `GET /mappings`
 
 ---
@@ -150,4 +170,5 @@ uv run pywrangler deploy
 
 - Use encrypted HLS/DASH with relative segment paths where possible.
 - HLS supports replacing `__FAIRPLAY_LICENSE_URL__` placeholder at runtime via Worker.
+- HLS also supports `__FAIRPLAY_CERTIFICATE_URL__` placeholder if your packager template uses it.
 - Access control is enforced on every `/play/...` segment request via session token.
