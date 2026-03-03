@@ -92,15 +92,17 @@ class ScanPage extends StatefulWidget {
 
 class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin {
   bool _isScanning = false;
-  String _statusMessage = '点击开始扫描';
+  String _statusMessage = '长按下方区域开始扫描';
   late AnimationController _animController;
+  Timer? _holdTimer;
+  bool _isLocked = false;
   
   // Encryption Config (Demo)
   final _encKey = enc.Key.fromUtf8('12345678901234567890123456789012');
   final _encIV = enc.IV.fromUtf8('1234567890123456');
   
   // 后端验证服务器地址 (SUN 安全方案)
-  final String _backendUrl = 'http://192.168.1.100:8000';
+  final String _backendUrl = 'http://192.168.50.114:8080';
 
   @override
   void initState() {
@@ -114,18 +116,38 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
   @override
   void dispose() {
     _animController.dispose();
+    _holdTimer?.cancel();
     super.dispose();
   }
 
-  void _toggleScan() async {
-    if (_isScanning) {
+  void _onPressStart() {
+    if (_isLocked) return; // Already locked, ignore press
+
+    _startScanning();
+    _holdTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) {
+        setState(() {
+          _isLocked = true;
+          _statusMessage = '已锁定扫描模式\n请继续靠近卡片...';
+        });
+        // Feedback: maybe a small vibration or sound here if possible
+      }
+    });
+  }
+
+  void _onPressEnd() {
+    _holdTimer?.cancel();
+    if (!_isLocked) {
+      // Released too early
       _stopScanning();
-    } else {
-      _startScanning();
     }
+    // If locked, do nothing (keep scanning)
   }
 
   void _startScanning() async {
+    // Prevent multiple starts
+    if (_isScanning) return;
+
     bool isAvailable = await NfcManager.instance.isAvailable();
     if (!isAvailable) {
       _showError('此设备不支持 NFC');
@@ -138,8 +160,8 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
 
     setState(() {
       _isScanning = true;
-      _statusMessage = '请将手机靠近卡片...';
-      _animController.repeat(reverse: true);
+      _statusMessage = '正在扫描...\n请保持长按';
+      _animController.forward(); // Fade in background
     });
 
     try {
@@ -190,7 +212,9 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
           }
         },
         onError: (e) async {
-           _stopScanning();
+           // Only stop if not locked or if it's a fatal error?
+           // Usually onError stops the session anyway.
+           _stopScanning(); 
            _showError('扫描错误: $e');
         }
       );
@@ -227,10 +251,11 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
     if (mounted) {
       setState(() {
         _isScanning = false;
+        _isLocked = false;
         _animController.stop();
-        _animController.reset();
+        _animController.reverse(); // Fade out
         if (_statusMessage.contains('...')) {
-           _statusMessage = '点击开始扫描';
+           _statusMessage = '长按下方区域开始扫描';
         }
       });
     }
@@ -314,82 +339,120 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF2E004F), Color(0xFF000000)],
-        ),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Animated Pulse Ring
-            Stack(
-              alignment: Alignment.center,
-              children: [
-                if (_isScanning)
-                  ScaleTransition(
-                    scale: Tween(begin: 1.0, end: 1.5).animate(_animController),
-                    child: FadeTransition(
-                      opacity: Tween(begin: 0.5, end: 0.0).animate(_animController),
-                      child: Container(
-                        width: 200,
-                        height: 200,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.greenAccent, width: 2),
+    return Scaffold(
+      backgroundColor: Colors.black, // Default black screen
+      body: Stack(
+        children: [
+          // 1. Full-screen Image with Fade Animation
+          Positioned.fill(
+            child: AnimatedOpacity(
+              opacity: _isScanning ? 1.0 : 0.0,
+              duration: const Duration(seconds: 2),
+              curve: Curves.easeIn,
+              child: Image.network(
+                'https://images.unsplash.com/photo-1550751827-4bd374c3f58b', // Cyberpunk/Tech background
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0xFF2E004F), Color(0xFF000000)],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+
+          // 2. Scan Button & Text (Positioned at bottom for thumb reach)
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Container(
+              height: MediaQuery.of(context).size.height * 0.5,
+              width: double.infinity,
+              color: Colors.transparent, // Invisible touch area
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (_) => _onPressStart(),
+                onTapUp: (_) => _onPressEnd(),
+                onTapCancel: () => _onPressEnd(),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 80.0), // Adjust for thumb reach
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      // Status Text
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: Text(
+                          _statusMessage,
+                          key: ValueKey(_statusMessage),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Colors.white70,
+                            letterSpacing: 1.2,
+                            shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                GestureDetector(
-                  onTap: _toggleScan,
-                  child: Container(
-                    width: 180,
-                    height: 180,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _isScanning ? Colors.black : Colors.white.withOpacity(0.1),
-                      border: Border.all(
-                        color: _isScanning ? Colors.greenAccent : Colors.white.withOpacity(0.5),
-                        width: 4,
+                      const SizedBox(height: 30),
+                      
+                      // Scan Icon/Button (Visual only now)
+                      Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          if (_isScanning)
+                            ScaleTransition(
+                              scale: Tween(begin: 1.0, end: 1.5).animate(_animController),
+                              child: FadeTransition(
+                                opacity: Tween(begin: 0.5, end: 0.0).animate(_animController),
+                                child: Container(
+                                  width: 100,
+                                  height: 100,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.greenAccent, width: 2),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Container(
+                            width: 90,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _isScanning ? Colors.black.withOpacity(0.8) : Colors.white.withOpacity(0.1),
+                              border: Border.all(
+                                color: _isScanning ? Colors.greenAccent : Colors.white.withOpacity(0.5),
+                                width: 3,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: (_isScanning ? Colors.greenAccent : Colors.purple).withOpacity(0.4),
+                                  blurRadius: 20,
+                                  spreadRadius: 2,
+                                )
+                              ],
+                            ),
+                            child: Icon(
+                              _isScanning ? Icons.wifi_tethering : Icons.nfc,
+                              size: 40,
+                              color: _isScanning ? Colors.greenAccent : Colors.white,
+                            ),
+                          ),
+                        ],
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: (_isScanning ? Colors.greenAccent : Colors.purple).withOpacity(0.4),
-                          blurRadius: 30,
-                          spreadRadius: 5,
-                        )
-                      ],
-                    ),
-                    child: Icon(
-                      _isScanning ? Icons.wifi_tethering : Icons.nfc,
-                      size: 80,
-                      color: _isScanning ? Colors.greenAccent : Colors.white,
-                    ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 50),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              child: Text(
-                _statusMessage,
-                key: ValueKey(_statusMessage),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  color: Colors.white70,
-                  letterSpacing: 1.2,
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -487,9 +550,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               Text(_errorMessage!, style: const TextStyle(color: Colors.red)),
             
             if (_isInitialized)
-              AspectRatio(
-                aspectRatio: _controller.value.aspectRatio,
-                child: VideoPlayer(_controller),
+              Center(
+                child: AspectRatio(
+                  aspectRatio: _controller.value.aspectRatio,
+                  child: VideoPlayer(_controller),
+                ),
               )
             else if (_errorMessage == null)
               const CircularProgressIndicator(),

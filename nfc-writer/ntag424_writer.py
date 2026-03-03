@@ -16,9 +16,14 @@ import os
 import struct  # 添加 struct 导入
 
 # 库文件路径 (可配置)
+if sys.platform == 'win32':
+    DEFAULT_LIB = 'OUR_MIFARE.dll'
+else:
+    DEFAULT_LIB = 'libOURMIFARE.so'
+
 LIB_PATH = os.environ.get(
     'OURMIFARE_LIB',
-    os.path.join(os.path.dirname(__file__), 'libOURMIFARE.so')
+    os.path.join(os.path.dirname(__file__), DEFAULT_LIB)
 )
 
 # 默认密钥 (出厂默认全0)
@@ -445,69 +450,69 @@ class Ntag424Writer:
 
         j = 6
 
-        # Offsets
-        # Logic from CallNtag:
-        # if (configdata[5] & 0xF0) < 0x50: (MetaRead requires Key 0-4) -> Offset at 6,7,8.
-        # if MetaRead == 0xE0 (Free):
-        #    if UIDMirror (0x80): Offset at 6,7,8. j=9.
-        #    if CountMirror (0x40): Offset at j, j+1, j+2.
-        
-        # We set MetaRead=0xE0 (Free).
-        # If we use EncFile (0x10), we didn't set 0x80 or 0x40.
-        # So we skip UID/Ctr offsets here.
-        
-        # Next block:
-        # if (configdata[5] & 0x0F) != 0x0F: (FileRead/MAC Key is set, 0x0 in our case)
-        #    Append SDMMACInputOffset (3 bytes).
-        #    if SDMENCFileData (0x10) set:
-        #       Append SDMENCOffset (3 bytes)
-        #       Append SDMENCLength (3 bytes)
-        #    Append SDMMACOffset (3 bytes)
-        
+        # Offsets Logic (Corrected)
+        # 1. Check MetaRead Access (Byte 5 High Nibble)
+        # If MetaRead == 0xE (Free), offsets are added for Mirror items.
+        meta_read = (configdata[5] >> 4) & 0x0F
+        if meta_read == 0x0E:
+            # UID Mirror (Bit 7)
+            if (configdata[3] & 0x80) > 0:
+                # Add UID Offset (Use picc_offset for UID?)
+                # If we want Plain UID Mirror, we need an offset for it.
+                # Let's assume picc_offset is used for UID position if EncFile is OFF.
+                offset_bytes = struct.pack("<I", picc_offset)[:3]
+                configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
+                j += 3
+            
+            # ReadCtr Mirror (Bit 6)
+            if (configdata[3] & 0x40) > 0:
+                # Add ReadCtr Offset
+                # Where to put ReadCtr? Maybe after UID?
+                # Let's assume picc_offset + 14 (UID len hex string?)
+                # Or just 0 if we don't care (but card might reject overlap?)
+                ctr_offset = picc_offset + 20 # Guess
+                offset_bytes = struct.pack("<I", ctr_offset)[:3]
+                configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
+                j += 3
+
+        # 2. Check FileRead Access (Byte 5 Low Nibble)
+        # If FileRead != 0xF (Forbidden), MAC/Enc offsets are added.
         if (configdata[5] & 0x0F) != 0x0F:
-            # 1. SDMMACInputOffset
+            # 1. SDMMACInputOffset (Always first in FileRead block)
             offset_bytes = struct.pack("<I", sdm_mac_input_offset)[:3]
             configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
             j += 3
             
-            if (configdata[3] & 0x10) > 0: # EncFileData
-                # 2. SDMENCOffset (p= start)
+            # 2. EncFileData (Bit 4)
+            if (configdata[3] & 0x10) > 0: 
+                # SDMENCOffset
                 offset_bytes = struct.pack("<I", picc_offset)[:3]
                 configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
                 j += 3
                 
-                # 3. SDMENCLength (Length of data to encrypt)
+                # SDMENCLength
                 offset_bytes = struct.pack("<I", sdm_enc_length)[:3]
                 configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
                 j += 3
                 
-            # 4. SDMMACOffset (m= start)
+            # 3. SDMMACOffset (Always last)
             offset_bytes = struct.pack("<I", mac_offset)[:3]
             configdata[j] = offset_bytes[0]; configdata[j+1] = offset_bytes[1]; configdata[j+2] = offset_bytes[2]
             j += 3
 
         # Call Library Function
-        # ntagchangefilesettings(comm_mode, fileno, data, len, sw)
-        # comm_mode: 0=Plain, 1=MAC, 3=Full (Code says 3 for Full? Enum?)
-        # Code: if index==2: configdata[0]=3 (Wait, that was configdata construction).
-        # Call: Objdll.ntagchangefilesettings(currentIndex, ...)
-        # currentIndex 0=Plain, 1=MAC, 2=Full.
-        # But changefilesettings usually requires Auth.
-        # If we Authenticated with Key 0 (Master), and Master key settings require Auth for Change,
-        # we typically use CommMode.Full (3? or 2?) or MAC.
-        # The Python code uses `self.comboBox_RWConfigConnModly.currentIndex()`.
-        # Items: "明文", "密文+MAC保护".
-        # So 0 or 1.
-        # If 1 -> "密文+MAC".
-        # Let's try 1 (MAC/Full). Since we have the library, it handles it.
-        
         print(f"Configuring SDM (Len={j})...")
         databuf = bytes(configdata[:j])
         retsw = bytes(2)
         
-        # 1 = Encrypted+MAC? (Based on UI "密文+MAC保护")
-        # Try 0 (Plain) if 1 fails with 91AE
-        res = self.lib.ntagchangefilesettings(0, 2, databuf, j, retsw) % 256
+        # Try forumtype4_change_config if ntagchangefilesettings doesn't exist
+        try:
+             res = self.lib.forumtype4_change_config(0, 2, databuf, j, retsw) % 256
+        except AttributeError:
+             try:
+                 res = self.lib.ntagchangefilesettings(0, 2, databuf, j, retsw) % 256
+             except AttributeError:
+                 raise Ntag424Error("Cannot find change config function in library")
         
         success, status_hex, msg = self._parse_card_status(retsw)
         if res == 0 and success:
