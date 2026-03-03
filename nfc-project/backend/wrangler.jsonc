@@ -22,7 +22,12 @@
   ],
   "vars": {
     "SDM_KEY_HEX": "518945027BB77671C3980890A13668E5",
-    "CDN_URL_TTL_SECONDS": "120"
+    "TOKEN_TTL_SECONDS": "300",
+    "CDN_URL_TTL_SECONDS": "120",
+    "PLAYBACK_SESSION_TTL_SECONDS": "300",
+    "DRM_WIDEVINE_LICENSE_URL": "",
+    "DRM_FAIRPLAY_LICENSE_URL": "",
+    "DRM_PLAYREADY_LICENSE_URL": ""
   },
   "observability": {
     "enabled": true

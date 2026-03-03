@@ -1,74 +1,153 @@
 # NFC Video Backend (Cloudflare Worker)
 
-This backend is fully refactored for Cloudflare Python Workers.
+Cloudflare-native backend for:
+
+1. NFC verify link (`/verify?p=...&m=...`)
+2. Access-controlled playback session generation
+3. CDN delivery via Worker + R2
+4. DRM-friendly playback flow (HLS/DASH manifest + license proxy)
+
+---
+
+## End-to-end flow (production)
+
+1. **NFC URL** hits `/verify`
+2. Worker decrypts SUN payload, finds UID mapping in D1
+3. Worker issues short-lived **business token**
+4. Client calls `/stream?token=...`
+5. Worker validates token and:
+   - non-DRM: redirects to signed `/cdn/...`
+   - DRM: issues playback session token and redirects to signed `/play/<session>/<manifest>`
+6. Player loads manifest/segments through `/play/...` (CDN path + access control)
+7. Player requests license via `/license/<session>/<drm-system>` (proxy)
+
+---
 
 ## Runtime model
 
-- Entry point: `main.py` (`WorkerEntrypoint`)
-- Persistent mapping storage: D1 (`env.DB`)
-- Video storage: R2 (`env.VIDEO_BUCKET`)
-- CDN auth: signed, short-lived media URLs (`/cdn/<key>?exp=...&sig=...`)
-- Stream endpoint: validates business token, then redirects to authenticated CDN URL
-- No SQLite usage
-- No local `uvicorn` service
+- Entry: `main.py` (`WorkerEntrypoint`)
+- Metadata: D1 (`env.DB`)
+- Media objects: R2 (`env.VIDEO_BUCKET`)
+- Access control:
+  - Business token: `/stream?token=...`
+  - CDN signed URL: `/cdn/<key>?exp=...&sig=...`
+  - DRM playback session token: `/play/<session>/<object>`
+
+---
 
 ## Required bindings and vars
 
-Configured in `wrangler.jsonc`:
+In `wrangler.jsonc`:
 
 - `d1_databases[0].binding = "DB"`
 - `r2_buckets[0].binding = "VIDEO_BUCKET"`
-- `vars.SDM_KEY_HEX` (NTAG SDM AES key)
-- `vars.CDN_URL_TTL_SECONDS` (media signed URL valid time)
-- Secret `TOKEN_SECRET` (business token signing)
-- Secret `CDN_SIGN_SECRET` (CDN media URL signing, optional; defaults to `TOKEN_SECRET`)
+- `vars.SDM_KEY_HEX`
+- `vars.TOKEN_TTL_SECONDS`
+- `vars.CDN_URL_TTL_SECONDS`
+- `vars.PLAYBACK_SESSION_TTL_SECONDS`
+- Optional default DRM license URLs:
+  - `vars.DRM_WIDEVINE_LICENSE_URL`
+  - `vars.DRM_FAIRPLAY_LICENSE_URL`
+  - `vars.DRM_PLAYREADY_LICENSE_URL`
 
-Set secret:
+Secrets:
+
+- `TOKEN_SECRET` (required)
+- `CDN_SIGN_SECRET` (optional, default `TOKEN_SECRET`)
+- `PLAYBACK_SIGN_SECRET` (optional, default `CDN_SIGN_SECRET`)
+- `DRM_LICENSE_AUTHORIZATION` (optional static auth header for upstream DRM provider)
 
 ```bash
 uv run pywrangler secret put TOKEN_SECRET
 uv run pywrangler secret put CDN_SIGN_SECRET
+uv run pywrangler secret put PLAYBACK_SIGN_SECRET
+uv run pywrangler secret put DRM_LICENSE_AUTHORIZATION
 ```
 
-## D1 initialization
+---
 
-Create DB (first time) and execute schema:
+## D1 setup
 
 ```bash
 uv run pywrangler d1 create nfc_video
 uv run pywrangler d1 execute nfc_video --local --file db_init.sql
 ```
 
-## R2 setup (video files stored on Cloudflare)
+---
 
-Create bucket and upload videos:
+## R2 setup
 
 ```bash
 uv run pywrangler r2 bucket create nfc-video-assets
-uv run pywrangler r2 object put nfc-video-assets/butterfly.mp4 --file ./butterfly.mp4
+uv run pywrangler r2 object put nfc-video-assets/demo/master.m3u8 --file ./master.m3u8
+uv run pywrangler r2 object put nfc-video-assets/demo/seg-0001.m4s --file ./seg-0001.m4s
 ```
 
-Then set `wrangler.jsonc`:
+Then set:
 
 - `r2_buckets[0].bucket_name = "nfc-video-assets"`
 
-## Run locally
+---
 
-```bash
-uv run pywrangler dev
+## Mapping API (`/map`) examples
+
+### Non-DRM mapping
+
+```json
+{
+  "uid": "04999911223344",
+  "filename": "promo/butterfly.mp4",
+  "name": "Promo Card"
+}
 ```
 
-## Deploy
+### DRM mapping (recommended)
 
-```bash
-uv run pywrangler deploy
+```json
+{
+  "uid": "04999911223344",
+  "filename": "demo/master.m3u8",
+  "name": "DRM Card",
+  "drm": {
+    "enabled": true,
+    "hls_manifest": "demo/master.m3u8",
+    "dash_manifest": "demo/manifest.mpd",
+    "licenses": {
+      "widevine": "https://license.example.com/widevine",
+      "fairplay": "https://license.example.com/fairplay",
+      "playready": "https://license.example.com/playready"
+    }
+  }
+}
 ```
+
+---
 
 ## API summary
 
 - `GET /health`
-- `POST /map` body: `{ "uid": "...", "filename": "...", "name": "..." }`
+- `POST /map`
 - `GET /verify?p=<hex>&m=<hex>`
 - `GET /stream?token=<signed-token>`
-- `GET /cdn/<object-key>?exp=<unix_ts>&sig=<signature>` (internal signed CDN endpoint)
+- `GET /stream?token=<signed-token>&mode=json` (returns playback descriptor JSON)
+- `GET|HEAD /cdn/<object-key>?exp=<unix_ts>&sig=<signature>`
+- `GET|HEAD /play/<session-token>/<object-key>` (DRM-friendly CDN path)
+- `POST|GET|HEAD|OPTIONS /license/<session-token>/<widevine|fairplay|playready>`
 - `GET /mappings`
+
+---
+
+## Dev / Deploy
+
+```bash
+uv run pywrangler dev
+uv run pywrangler deploy
+```
+
+---
+
+## Notes for DRM packaging
+
+- Use encrypted HLS/DASH with relative segment paths where possible.
+- HLS supports replacing `__FAIRPLAY_LICENSE_URL__` placeholder at runtime via Worker.
+- Access control is enforced on every `/play/...` segment request via session token.
