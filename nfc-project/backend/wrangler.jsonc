@@ -14,9 +14,15 @@
       "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "VIDEO_BUCKET",
+      "bucket_name": "REPLACE_WITH_YOUR_VIDEO_BUCKET"
+    }
+  ],
   "vars": {
-    "ASSET_BASE_URL": "https://assets.example.com/videos",
-    "SDM_KEY_HEX": "518945027BB77671C3980890A13668E5"
+    "SDM_KEY_HEX": "518945027BB77671C3980890A13668E5",
+    "CDN_URL_TTL_SECONDS": "120"
   },
   "observability": {
     "enabled": true

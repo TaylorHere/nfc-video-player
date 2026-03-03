@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from js import Response as JsResponse
 from js import Uint8Array, crypto
@@ -14,6 +14,8 @@ from workers import WorkerEntrypoint
 DEFAULT_FILENAME = "butterfly.mp4"
 DEFAULT_SDM_KEY_HEX = "518945027BB77671C3980890A13668E5"
 TOKEN_TTL_SECONDS = 300
+CDN_URL_TTL_SECONDS = 120
+MEDIA_CACHE_SECONDS = 3600
 
 
 def _json_response(payload: dict | list, status: int = 200):
@@ -69,14 +71,20 @@ def _field(row, key: str, default=None):
     return getattr(row, key, default)
 
 
-def _build_asset_url(filename: str, asset_base_url: str | None) -> str:
+def _safe_object_key(path_value: str) -> str:
+    key = unquote(path_value).lstrip("/")
+    if not key or "\x00" in key or "\n" in key or "\r" in key:
+        raise ValueError("invalid object key")
+    if ".." in key:
+        raise ValueError("invalid object key")
+    return key
+
+
+def _normalize_media_key(raw_filename: str) -> str:
+    filename = str(raw_filename or "").strip()
     if filename.startswith("http://") or filename.startswith("https://"):
-        return filename
-    if asset_base_url is not None:
-        asset_base_url = str(asset_base_url).strip()
-    if not asset_base_url:
-        raise ValueError("ASSET_BASE_URL is not configured")
-    return f"{asset_base_url.rstrip('/')}/{filename.lstrip('/')}"
+        filename = urlparse(filename).path
+    return _safe_object_key(filename)
 
 
 async def _decrypt_sun_payload(p_hex: str, key: bytes) -> bytes:
@@ -120,8 +128,45 @@ class Default(WorkerEntrypoint):
             secret = "dev-token-secret-change-me"
         return str(secret).encode("utf-8")
 
+    def _cdn_secret(self) -> bytes:
+        secret = getattr(self.env, "CDN_SIGN_SECRET", None)
+        if secret:
+            return str(secret).encode("utf-8")
+        return self._token_secret()
+
     def _sign(self, payload: bytes) -> bytes:
         return hmac.new(self._token_secret(), payload, hashlib.sha256).digest()
+
+    def _cdn_ttl_seconds(self) -> int:
+        raw_value = getattr(self.env, "CDN_URL_TTL_SECONDS", CDN_URL_TTL_SECONDS)
+        try:
+            ttl = int(str(raw_value))
+        except Exception:
+            ttl = CDN_URL_TTL_SECONDS
+        return max(30, min(ttl, 3600))
+
+    def _cdn_signature(self, object_key: str, expires_at: int) -> str:
+        payload = f"{object_key}\n{expires_at}".encode("utf-8")
+        signature = hmac.new(self._cdn_secret(), payload, hashlib.sha256).digest()
+        return _b64url_encode(signature)
+
+    def _issue_cdn_url(self, origin: str, object_key: str) -> str:
+        expires_at = int(time.time()) + self._cdn_ttl_seconds()
+        signature = self._cdn_signature(object_key, expires_at)
+        encoded_key = quote(object_key, safe="/")
+        return f"{origin}/cdn/{encoded_key}?exp={expires_at}&sig={signature}"
+
+    def _validate_cdn_url(self, object_key: str, exp_raw: str, sig_raw: str) -> bool:
+        try:
+            expires_at = int(exp_raw)
+        except Exception:
+            return False
+
+        if int(time.time()) > expires_at:
+            return False
+
+        expected = self._cdn_signature(object_key, expires_at)
+        return hmac.compare_digest(sig_raw, expected)
 
     def _issue_token(self, uid: str, filename: str) -> str:
         payload = {
@@ -303,12 +348,13 @@ class Default(WorkerEntrypoint):
             return _json_response({"error": "Invalid token payload"}, status=403)
 
         try:
-            asset_base_url = getattr(self.env, "ASSET_BASE_URL", None)
-            video_url = _build_asset_url(filename, asset_base_url)
+            media_key = _normalize_media_key(filename)
+            origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            video_url = self._issue_cdn_url(origin, media_key)
         except Exception:
             return _json_response(
-                {"error": "ASSET_BASE_URL is not configured"},
-                status=500,
+                {"error": "Invalid media key in token"},
+                status=403,
             )
 
         return JsResponse.new(
@@ -320,6 +366,97 @@ class Default(WorkerEntrypoint):
                         "location": video_url,
                         "cache-control": "no-store",
                     },
+                }
+            ),
+        )
+
+    async def _handle_cdn_media(self, request, object_path: str):
+        try:
+            object_key = _safe_object_key(object_path)
+        except Exception:
+            return _json_response({"error": "Invalid media path"}, status=400)
+
+        parsed_url = urlparse(str(request.url))
+        params = parse_qs(parsed_url.query)
+        exp = params.get("exp", [None])[0]
+        sig = params.get("sig", [None])[0]
+        if not exp or not sig:
+            return _json_response({"error": "Missing media signature"}, status=403)
+
+        if not self._validate_cdn_url(object_key, str(exp), str(sig)):
+            return _json_response({"error": "Invalid or expired media signature"}, status=403)
+
+        bucket = getattr(self.env, "VIDEO_BUCKET", None)
+        if not bucket:
+            return _json_response({"error": "VIDEO_BUCKET binding is missing"}, status=500)
+
+        range_header = request.headers.get("range")
+        r2_object = None
+        if range_header:
+            try:
+                r2_object = await bucket.get(
+                    object_key,
+                    to_js({"range": str(range_header)}),
+                )
+            except Exception:
+                r2_object = await bucket.get(object_key)
+        else:
+            r2_object = await bucket.get(object_key)
+
+        if not r2_object:
+            return _json_response({"error": "Video not found"}, status=404)
+
+        headers = {
+            "cache-control": f"public, max-age=0, s-maxage={MEDIA_CACHE_SECONDS}",
+            "accept-ranges": "bytes",
+        }
+
+        metadata = getattr(r2_object, "httpMetadata", None)
+        content_type = getattr(metadata, "contentType", None) if metadata else None
+        headers["content-type"] = str(content_type or "video/mp4")
+
+        etag = getattr(r2_object, "httpEtag", None)
+        if etag:
+            headers["etag"] = str(etag)
+
+        status = 200
+        size = getattr(r2_object, "size", None)
+        if size is not None:
+            try:
+                headers["content-length"] = str(int(size))
+            except Exception:
+                pass
+
+        range_info = getattr(r2_object, "range", None)
+        if range_header and range_info is not None:
+            try:
+                start = int(getattr(range_info, "offset"))
+                length = int(getattr(range_info, "length"))
+                total = int(size) if size is not None else start + length
+                end = start + length - 1
+                headers["content-range"] = f"bytes {start}-{end}/{total}"
+                headers["content-length"] = str(length)
+                status = 206
+            except Exception:
+                pass
+
+        if str(request.method).upper() == "HEAD":
+            return JsResponse.new(
+                "",
+                to_js(
+                    {
+                        "status": status,
+                        "headers": headers,
+                    }
+                ),
+            )
+
+        return JsResponse.new(
+            r2_object.body,
+            to_js(
+                {
+                    "status": status,
+                    "headers": headers,
                 }
             ),
         )
@@ -348,6 +485,12 @@ class Default(WorkerEntrypoint):
             if method != "GET":
                 return _text_response("Method Not Allowed", status=405)
             return await self._handle_stream(request)
+
+        if path.startswith("/cdn/"):
+            if method not in ("GET", "HEAD"):
+                return _text_response("Method Not Allowed", status=405)
+            object_path = path[len("/cdn/") :]
+            return await self._handle_cdn_media(request, object_path)
 
         if path == "/mappings":
             if method != "GET":
