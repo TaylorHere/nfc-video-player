@@ -87,7 +87,14 @@ ADMIN_UI_HTML = r"""<!doctype html>
       margin: 0 0 8px;
       font-size: 15px;
     }
-    .table-wrap { max-height: 62vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .table-wrap {
+      max-height: 62vh;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .table-tip { margin: 0 0 8px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { border-bottom: 1px solid #22345a; padding: 7px 8px; text-align: left; vertical-align: top; }
     th { position: sticky; top: 0; background: #0f1831; z-index: 2; }
@@ -121,6 +128,44 @@ ADMIN_UI_HTML = r"""<!doctype html>
       padding: 1px 8px;
       font-size: 11px;
       color: #bad0ff;
+    }
+    #assetTable { min-width: 760px; }
+    #mappingTable { min-width: 620px; }
+    #assetTable td:first-child { min-width: 240px; word-break: break-all; }
+    #mappingTable td:nth-child(2) { min-width: 220px; word-break: break-all; }
+
+    @media (max-width: 980px) {
+      .wrap { padding: 14px; }
+      .top {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+      }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      .panel { padding: 10px; }
+    }
+
+    @media (max-width: 640px) {
+      .wrap { padding: 10px; }
+      h1 { font-size: 20px; }
+      .toolbar,
+      .grid2,
+      .grid3 { grid-template-columns: 1fr; }
+      .actions { width: 100%; }
+      .actions button {
+        flex: 1 1 calc(50% - 6px);
+        min-height: 40px;
+      }
+      input, textarea, button {
+        font-size: 14px;
+      }
+      .inline {
+        flex-wrap: wrap;
+      }
+      #assetTable { min-width: 680px; }
+      #mappingTable { min-width: 560px; }
+      .table-tip { font-size: 11px; }
     }
   </style>
 </head>
@@ -159,6 +204,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
     <div class="layout">
       <div class="panel">
         <h2 class="section-title">资源列表</h2>
+        <div class="muted table-tip">手机端可左右滑动查看完整列</div>
         <div class="table-wrap">
           <table id="assetTable">
             <thead>
@@ -253,6 +299,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
 
         <div style="margin-top:12px;">
           <h3 class="section-title">映射列表</h3>
+          <div class="muted table-tip">手机端可左右滑动查看完整列</div>
           <div class="table-wrap" style="max-height:220px;">
             <table id="mappingTable">
               <thead><tr><th>UID</th><th>filename</th><th>DRM</th><th>操作</th></tr></thead>
