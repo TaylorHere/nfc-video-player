@@ -1,2 +1,0 @@
-# Cloudflare Python Worker uses pyproject.toml / pywrangler for dependencies.
-# This file is kept only for legacy tooling compatibility.
