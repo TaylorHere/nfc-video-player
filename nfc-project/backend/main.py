@@ -791,6 +791,56 @@ class Default(WorkerEntrypoint):
 
         raise AttributeError("No supported binary body reader on object")
 
+    def _to_uint8_array(self, raw: bytes):
+        data = bytes(raw)
+        arr = Uint8Array.new(len(data))
+        for index, value in enumerate(data):
+            arr[index] = value
+        return arr
+
+    def _coerce_js_body(self, body):
+        if body is None:
+            return body
+        if isinstance(body, str):
+            return body
+        if isinstance(body, (bytes, bytearray, memoryview)):
+            return self._to_uint8_array(bytes(body))
+        if isinstance(body, (list, tuple)):
+            try:
+                return self._to_uint8_array(bytes(int(v) & 0xFF for v in body))
+            except Exception:
+                return body
+
+        # JS ArrayBuffer / ReadableStream / TypedArray will pass through.
+        if hasattr(body, "byteLength") or hasattr(body, "getReader"):
+            return body
+
+        if hasattr(body, "to_py"):
+            try:
+                py_value = body.to_py()
+                if isinstance(py_value, (bytes, bytearray, memoryview)):
+                    return self._to_uint8_array(bytes(py_value))
+                if isinstance(py_value, (list, tuple)):
+                    return self._to_uint8_array(bytes(int(v) & 0xFF for v in py_value))
+            except Exception:
+                pass
+
+        return body
+
+    def _estimate_body_size(self, body) -> int:
+        if body is None:
+            return 0
+        if isinstance(body, str):
+            return len(body.encode("utf-8"))
+        if isinstance(body, (bytes, bytearray, memoryview)):
+            return len(body)
+        if hasattr(body, "byteLength"):
+            try:
+                return int(getattr(body, "byteLength"))
+            except Exception:
+                return 0
+        return 0
+
     async def _upsert_mapping(
         self, uid: str, filename: str, name: str | None, drm_config: dict | None
     ) -> dict:
@@ -923,10 +973,11 @@ class Default(WorkerEntrypoint):
         if not bucket:
             raise ValueError("VIDEO_BUCKET binding is missing")
 
-        body = await self._read_binary_body(request)
-        body_len = int(getattr(body, "byteLength", 0) or 0)
-        if body_len <= 0 and isinstance(body, (bytes, bytearray)):
-            body_len = len(body)
+        raw_body = await self._read_binary_body(request)
+        body = self._coerce_js_body(raw_body)
+        body_len = self._estimate_body_size(raw_body)
+        if body_len <= 0:
+            body_len = self._estimate_body_size(body)
         if body_len <= 0:
             raise ValueError("empty upload body")
 
@@ -1557,7 +1608,7 @@ class Default(WorkerEntrypoint):
 
         fetch_options = {"method": method, "headers": proxy_headers}
         if method == "POST":
-            fetch_options["body"] = await self._read_binary_body(request)
+            fetch_options["body"] = self._coerce_js_body(await self._read_binary_body(request))
 
         upstream = await js_fetch(str(upstream_url), to_js(fetch_options))
         status = int(upstream.status)
