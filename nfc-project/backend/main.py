@@ -69,6 +69,20 @@ ADMIN_UI_HTML = r"""<!doctype html>
       border-radius: 10px;
       padding: 12px;
     }
+    .hidden { display: none !important; }
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .detail-asset-key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #c8d8ff;
+      word-break: break-all;
+    }
     .flow {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -138,6 +152,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
       background: #0e1730;
       color: var(--text);
       padding: 8px 10px;
+    }
+    input[readonly] {
+      opacity: .75;
+      cursor: not-allowed;
     }
     button[disabled] {
       opacity: .55;
@@ -234,48 +252,33 @@ ADMIN_UI_HTML = r"""<!doctype html>
       <div id="whoami" class="mono muted">加载中...</div>
     </div>
 
-    <div class="flow" id="flowSteps">
-      <div class="flow-step active" data-step="1">
-        <strong>STEP 1</strong>
-        <span>选择或上传资源</span>
+    <div id="listView">
+      <div class="panel" style="margin-bottom:12px;">
+        <div class="toolbar">
+          <div>
+            <label class="muted">资源前缀</label>
+            <input id="prefix" placeholder="demo/" />
+          </div>
+          <div>
+            <label class="muted">上传 key（留空自动=前缀+文件名）</label>
+            <input id="uploadKey" placeholder="demo/master.m3u8" />
+          </div>
+          <div>
+            <label class="muted">选择文件</label>
+            <input type="file" id="uploadFile" />
+          </div>
+          <div class="actions">
+            <button class="secondary" id="refreshAll">刷新</button>
+            <button id="uploadBtn">上传</button>
+          </div>
+        </div>
+        <div class="muted" id="uploadHint" style="margin-top:4px;">选择文件后会自动填充推荐 key。</div>
+        <div id="assetMsg" class="mono muted"></div>
       </div>
-      <div class="flow-step" data-step="2">
-        <strong>STEP 2</strong>
-        <span>输入 UID 与名称</span>
-      </div>
-      <div class="flow-step" data-step="3">
-        <strong>STEP 3</strong>
-        <span>启用 DRM（可选）并保存</span>
-      </div>
-    </div>
 
-    <div class="panel" style="margin-bottom:12px;">
-      <div class="toolbar">
-        <div>
-          <label class="muted">资源前缀</label>
-          <input id="prefix" placeholder="demo/" />
-        </div>
-        <div>
-          <label class="muted">上传 key（留空自动=前缀+文件名）</label>
-          <input id="uploadKey" placeholder="demo/master.m3u8" />
-        </div>
-        <div>
-          <label class="muted">选择文件</label>
-          <input type="file" id="uploadFile" />
-        </div>
-        <div class="actions">
-          <button class="secondary" id="refreshAll">刷新</button>
-          <button id="uploadBtn">上传</button>
-        </div>
-      </div>
-      <div class="muted" id="uploadHint" style="margin-top:4px;">选择文件后会自动填充推荐 key。</div>
-      <div id="assetMsg" class="mono muted"></div>
-    </div>
-
-    <div class="layout">
       <div class="panel">
         <h2 class="section-title">资源列表</h2>
-        <div class="muted table-tip">手机端可左右滑动查看完整列</div>
+        <div class="muted table-tip">点击“详情”进入资源二级页配置映射与 DRM</div>
         <div class="table-wrap">
           <table id="assetTable">
             <thead>
@@ -291,8 +294,30 @@ ADMIN_UI_HTML = r"""<!doctype html>
           </table>
         </div>
       </div>
+    </div>
 
+    <div id="detailView" class="hidden">
       <div class="panel">
+        <div class="detail-header">
+          <button class="secondary" id="detailBack">← 返回资源列表</button>
+          <div id="detailAssetKey" class="detail-asset-key">未选择资源</div>
+        </div>
+
+        <div class="flow" id="flowSteps">
+          <div class="flow-step active" data-step="1">
+            <strong>STEP 1</strong>
+            <span>已进入资源详情</span>
+          </div>
+          <div class="flow-step" data-step="2">
+            <strong>STEP 2</strong>
+            <span>输入 UID 与名称</span>
+          </div>
+          <div class="flow-step" data-step="3">
+            <strong>STEP 3</strong>
+            <span>启用 DRM（可选）并保存</span>
+          </div>
+        </div>
+
         <h2 class="section-title">映射与 DRM 详情</h2>
         <div class="muted" id="selectedAssetHint">先在左侧选择资源，再配置映射。</div>
         <div class="grid2" style="margin-top:8px;">
@@ -307,7 +332,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
         </div>
         <div style="margin-top:8px;">
           <label class="muted">资源 key (filename)</label>
-          <input id="filename" class="mono" placeholder="demo/master.m3u8" />
+          <input id="filename" class="mono" placeholder="demo/master.m3u8" readonly />
         </div>
         <div style="margin-top:8px;" class="inline">
           <input type="checkbox" id="drmEnabled" style="width:auto;" />
@@ -375,8 +400,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
         </div>
 
         <div style="margin-top:12px;">
-          <h3 class="section-title">映射列表</h3>
-          <div class="muted table-tip">手机端可左右滑动查看完整列</div>
+          <h3 class="section-title">当前资源映射列表</h3>
+          <div class="muted table-tip">仅显示当前资源的 UID 映射</div>
           <div class="table-wrap" style="max-height:220px;">
             <table id="mappingTable">
               <thead><tr><th>UID</th><th>filename</th><th>DRM</th><th>操作</th></tr></thead>
@@ -396,7 +421,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
       mappingByUid: new Map(),
       mappingsByFile: new Map(),
       selectedKey: "",
-      dirty: false
+      dirty: false,
+      currentView: "list"
     };
     const FORM_FIELDS = [
       "uid", "name", "filename", "drmEnabled",
@@ -506,6 +532,24 @@ ADMIN_UI_HTML = r"""<!doctype html>
       updateFlow();
     }
 
+    function showListView() {
+      state.currentView = "list";
+      document.getElementById("listView").classList.remove("hidden");
+      document.getElementById("detailView").classList.add("hidden");
+    }
+
+    function showDetailView() {
+      state.currentView = "detail";
+      document.getElementById("listView").classList.add("hidden");
+      document.getElementById("detailView").classList.remove("hidden");
+    }
+
+    function updateDetailHeader() {
+      const detailKey = document.getElementById("detailAssetKey");
+      if (!detailKey) return;
+      detailKey.textContent = state.selectedKey || "未选择资源";
+    }
+
     function suggestUploadKeyFromFile() {
       const keyInput = document.getElementById("uploadKey");
       const fileEl = document.getElementById("uploadFile");
@@ -533,6 +577,9 @@ ADMIN_UI_HTML = r"""<!doctype html>
       document.getElementById("drmEnabled").checked = false;
       document.getElementById("drmAdvanced").open = false;
       document.getElementById("drmHeaders").value = "{}";
+      if (state.selectedKey) {
+        document.getElementById("filename").value = state.selectedKey;
+      }
       clearDirty();
     }
 
@@ -557,6 +604,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       document.getElementById("drmHeaders").value = JSON.stringify(headers || {}, null, 2);
       document.getElementById("drmAdvanced").open = !!drm.enabled;
       applySelectedAsset(mapping.filename || "", true);
+      showDetailView();
       clearDirty();
     }
 
@@ -589,7 +637,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       const normalized = key || "";
       if (!force && state.dirty && normalized !== state.selectedKey) {
         const proceed = confirm("当前有未保存修改，切换资源可能覆盖 filename。是否继续？");
-        if (!proceed) return;
+        if (!proceed) return false;
       }
       state.selectedKey = key || "";
       if (key) {
@@ -607,12 +655,32 @@ ADMIN_UI_HTML = r"""<!doctype html>
         : "当前资源尚未被映射";
       document.getElementById("selectedAssetHint").textContent = key ? ("已选资源: " + key + " | " + hint) : "先在左侧选择资源，再配置映射。";
       renderAssets();
+      renderMappings();
+      updateDetailHeader();
+      updateFlow();
+      return true;
+    }
+
+    function openAssetDetail(key, force = false) {
+      const ok = applySelectedAsset(key, force);
+      if (!ok) return;
+      showDetailView();
+      if (!state.dirty) {
+        clearMappingForm();
+      }
       updateFlow();
     }
 
     function renderMappings() {
       const tbody = document.querySelector("#mappingTable tbody");
-      tbody.innerHTML = state.mappings.map((row) => {
+      const rows = state.selectedKey
+        ? state.mappings.filter((row) => String(row.filename || "") === state.selectedKey)
+        : [];
+      if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='4' class='muted'>当前资源暂无映射</td></tr>";
+        return;
+      }
+      tbody.innerHTML = rows.map((row) => {
         const drm = row.drm && row.drm.enabled ? "enabled" : "disabled";
         return "<tr>"
           + "<td class='mono'>" + esc(row.uid) + "</td>"
@@ -639,8 +707,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
           + "<td>" + esc(row.uploaded || "") + "</td>"
           + "<td>" + esc(mappedHint) + "</td>"
           + "<td class='actions'>"
-          + "<button class='secondary' data-action='pick' data-key='" + esc(row.key) + "'>选择</button>"
-          + "<button class='secondary' data-action='map' data-key='" + esc(row.key) + "'>映射</button>"
+          + "<button class='secondary' data-action='detail' data-key='" + esc(row.key) + "'>详情</button>"
           + "<button class='secondary' data-action='download' data-key='" + esc(row.key) + "'>下载</button>"
           + "<button class='danger' data-action='delete' data-key='" + esc(row.key) + "'>删除</button>"
           + "</td>"
@@ -669,7 +736,13 @@ ADMIN_UI_HTML = r"""<!doctype html>
       const prefix = document.getElementById("prefix").value.trim();
       const data = await api("/assets" + (prefix ? ("?prefix=" + encodeURIComponent(prefix)) : ""));
       state.assets = Array.isArray(data.items) ? data.items : [];
+      if (state.selectedKey && !state.assets.some((item) => String(item.key) === state.selectedKey)) {
+        state.selectedKey = "";
+        showListView();
+      }
       renderAssets();
+      renderMappings();
+      updateDetailHeader();
     }
 
     async function refreshAll() {
@@ -815,6 +888,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
         if (state.selectedKey === key) {
           state.selectedKey = "";
           document.getElementById("selectedAssetHint").textContent = "先在左侧选择资源，再配置映射。";
+          showListView();
           updateFlow();
         }
         await loadAssets();
@@ -828,13 +902,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
       if (!btn) return;
       const action = btn.getAttribute("data-action");
       const key = btn.getAttribute("data-key");
-      if (action === "pick") {
-        applySelectedAsset(key);
-        return;
-      }
-      if (action === "map") {
-        applySelectedAsset(key);
-        document.getElementById("filename").value = key || "";
+      if (action === "detail") {
+        openAssetDetail(key);
         return;
       }
       if (action === "download") {
@@ -879,6 +948,13 @@ ADMIN_UI_HTML = r"""<!doctype html>
     });
     document.getElementById("refreshAll").onclick = refreshAll;
     document.getElementById("uploadBtn").onclick = uploadAsset;
+    document.getElementById("detailBack").onclick = () => {
+      if (state.dirty) {
+        const proceed = confirm("当前有未保存内容，确定返回资源列表？");
+        if (!proceed) return;
+      }
+      showListView();
+    };
     document.getElementById("saveMapping").onclick = saveMapping;
     document.getElementById("loadMappingByUid").onclick = loadMappingByUid;
     document.getElementById("deleteMappingByUid").onclick = deleteMappingByUid;
@@ -907,6 +983,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       updateFlow();
     });
 
+    showListView();
     clearMappingForm();
     refreshAll();
     updateFlow();
