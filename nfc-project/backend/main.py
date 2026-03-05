@@ -69,6 +69,37 @@ ADMIN_UI_HTML = r"""<!doctype html>
       border-radius: 10px;
       padding: 12px;
     }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .flow-step {
+      border: 1px solid #2a3f72;
+      border-radius: 10px;
+      background: #0d1731;
+      padding: 8px 10px;
+    }
+    .flow-step strong {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 2px;
+      font-weight: 600;
+      letter-spacing: .2px;
+    }
+    .flow-step span {
+      font-size: 13px;
+    }
+    .flow-step.done {
+      border-color: #2a7a54;
+      box-shadow: inset 0 0 0 1px rgba(99, 241, 170, 0.12);
+    }
+    .flow-step.active {
+      border-color: #4d7dff;
+      box-shadow: inset 0 0 0 1px rgba(96, 143, 255, 0.25);
+    }
     .ok { color: var(--ok); }
     .err { color: var(--err); white-space: pre-wrap; }
     .toolbar {
@@ -108,6 +139,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
       color: var(--text);
       padding: 8px 10px;
     }
+    button[disabled] {
+      opacity: .55;
+      cursor: not-allowed;
+    }
     textarea { min-height: 94px; resize: vertical; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -129,6 +164,25 @@ ADMIN_UI_HTML = r"""<!doctype html>
       font-size: 11px;
       color: #bad0ff;
     }
+    details.advanced {
+      margin-top: 8px;
+      border: 1px solid #2d4477;
+      border-radius: 8px;
+      padding: 8px;
+      background: #0c152d;
+    }
+    details.advanced > summary {
+      cursor: pointer;
+      color: #c9d8fb;
+      font-size: 12px;
+      user-select: none;
+    }
+    .sticky-actions {
+      position: sticky;
+      bottom: 0;
+      padding-top: 8px;
+      background: linear-gradient(180deg, rgba(17,26,51,0.05) 0%, rgba(17,26,51,0.96) 35%);
+    }
     #assetTable { min-width: 760px; }
     #mappingTable { min-width: 620px; }
     #assetTable td:first-child { min-width: 240px; word-break: break-all; }
@@ -144,6 +198,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       .toolbar { grid-template-columns: 1fr 1fr; }
       .layout { grid-template-columns: 1fr; }
       .panel { padding: 10px; }
+      .flow { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
@@ -174,9 +229,24 @@ ADMIN_UI_HTML = r"""<!doctype html>
     <div class="top">
       <div>
         <h1>NFC 资源浏览器</h1>
-        <div class="muted">以资源为中心：上传、删除、下载、映射与 DRM 配置一体化</div>
+        <div class="muted">遵循“清晰、反馈、渐进披露”的操作流：选资源 → 设 UID → 配 DRM</div>
       </div>
       <div id="whoami" class="mono muted">加载中...</div>
+    </div>
+
+    <div class="flow" id="flowSteps">
+      <div class="flow-step active" data-step="1">
+        <strong>STEP 1</strong>
+        <span>选择或上传资源</span>
+      </div>
+      <div class="flow-step" data-step="2">
+        <strong>STEP 2</strong>
+        <span>输入 UID 与名称</span>
+      </div>
+      <div class="flow-step" data-step="3">
+        <strong>STEP 3</strong>
+        <span>启用 DRM（可选）并保存</span>
+      </div>
     </div>
 
     <div class="panel" style="margin-bottom:12px;">
@@ -198,6 +268,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
           <button id="uploadBtn">上传</button>
         </div>
       </div>
+      <div class="muted" id="uploadHint" style="margin-top:4px;">选择文件后会自动填充推荐 key。</div>
       <div id="assetMsg" class="mono muted"></div>
     </div>
 
@@ -244,58 +315,64 @@ ADMIN_UI_HTML = r"""<!doctype html>
           <span class="badge">建议 HLS(.m3u8)/DASH(.mpd) 使用清单文件</span>
         </div>
 
-        <div class="grid2" style="margin-top:8px;">
-          <div>
-            <label class="muted">HLS Manifest</label>
-            <input id="hlsManifest" class="mono" placeholder="demo/master.m3u8" />
+        <details class="advanced" id="drmAdvanced">
+          <summary>DRM 高级配置（仅启用 DRM 时填写）</summary>
+          <div class="grid2" style="margin-top:8px;">
+            <div>
+              <label class="muted">HLS Manifest</label>
+              <input id="hlsManifest" class="mono" placeholder="demo/master.m3u8" />
+            </div>
+            <div>
+              <label class="muted">DASH Manifest</label>
+              <input id="dashManifest" class="mono" placeholder="demo/master.mpd" />
+            </div>
           </div>
-          <div>
-            <label class="muted">DASH Manifest</label>
-            <input id="dashManifest" class="mono" placeholder="demo/master.mpd" />
-          </div>
-        </div>
 
-        <div class="grid3" style="margin-top:8px;">
-          <div>
-            <label class="muted">Widevine License</label>
-            <input id="licWidevine" placeholder="https://..." />
+          <div class="grid3" style="margin-top:8px;">
+            <div>
+              <label class="muted">Widevine License</label>
+              <input id="licWidevine" placeholder="https://..." />
+            </div>
+            <div>
+              <label class="muted">FairPlay License</label>
+              <input id="licFairplay" placeholder="https://..." />
+            </div>
+            <div>
+              <label class="muted">PlayReady License</label>
+              <input id="licPlayready" placeholder="https://..." />
+            </div>
           </div>
-          <div>
-            <label class="muted">FairPlay License</label>
-            <input id="licFairplay" placeholder="https://..." />
-          </div>
-          <div>
-            <label class="muted">PlayReady License</label>
-            <input id="licPlayready" placeholder="https://..." />
-          </div>
-        </div>
 
-        <div class="grid3" style="margin-top:8px;">
-          <div>
-            <label class="muted">Widevine Cert</label>
-            <input id="certWidevine" placeholder="https://..." />
+          <div class="grid3" style="margin-top:8px;">
+            <div>
+              <label class="muted">Widevine Cert</label>
+              <input id="certWidevine" placeholder="https://..." />
+            </div>
+            <div>
+              <label class="muted">FairPlay Cert</label>
+              <input id="certFairplay" placeholder="https://..." />
+            </div>
+            <div>
+              <label class="muted">PlayReady Cert</label>
+              <input id="certPlayready" placeholder="https://..." />
+            </div>
           </div>
-          <div>
-            <label class="muted">FairPlay Cert</label>
-            <input id="certFairplay" placeholder="https://..." />
-          </div>
-          <div>
-            <label class="muted">PlayReady Cert</label>
-            <input id="certPlayready" placeholder="https://..." />
-          </div>
-        </div>
 
-        <div style="margin-top:8px;">
-          <label class="muted">DRM Header JSON（可选，格式: {"widevine":{"x-token":"..."}}）</label>
-          <textarea id="drmHeaders" class="mono" placeholder="{}"></textarea>
-        </div>
+          <div style="margin-top:8px;">
+            <label class="muted">DRM Header JSON（可选，格式: {"widevine":{"x-token":"..."}}）</label>
+            <textarea id="drmHeaders" class="mono" placeholder="{}"></textarea>
+          </div>
+        </details>
 
-        <div class="actions" style="margin-top:8px;">
-          <button id="saveMapping">保存映射</button>
-          <button class="secondary" id="loadMappingByUid">按 UID 加载</button>
-          <button class="danger" id="deleteMappingByUid">删除 UID 映射</button>
+        <div class="sticky-actions">
+          <div class="actions" style="margin-top:8px;">
+            <button id="saveMapping">保存映射</button>
+            <button class="secondary" id="loadMappingByUid">按 UID 加载</button>
+            <button class="secondary" id="clearForm">清空表单</button>
+            <button class="danger" id="deleteMappingByUid">删除 UID 映射</button>
+          </div>
+          <div id="mappingMsg" class="mono muted" style="margin-top:8px;"></div>
         </div>
-        <div id="mappingMsg" class="mono muted" style="margin-top:8px;"></div>
 
         <div style="margin-top:12px;">
           <h3 class="section-title">映射列表</h3>
@@ -318,8 +395,16 @@ ADMIN_UI_HTML = r"""<!doctype html>
       mappings: [],
       mappingByUid: new Map(),
       mappingsByFile: new Map(),
-      selectedKey: ""
+      selectedKey: "",
+      dirty: false
     };
+    const FORM_FIELDS = [
+      "uid", "name", "filename", "drmEnabled",
+      "hlsManifest", "dashManifest",
+      "licWidevine", "licFairplay", "licPlayready",
+      "certWidevine", "certFairplay", "certPlayready",
+      "drmHeaders"
+    ];
 
     function esc(v) {
       return String(v ?? "")
@@ -357,6 +442,13 @@ ADMIN_UI_HTML = r"""<!doctype html>
       return out;
     }
 
+    function normalizePrefix(raw) {
+      let value = String(raw || "").trim();
+      while (value.startsWith("/")) value = value.slice(1);
+      while (value.endsWith("/")) value = value.slice(0, -1);
+      return value;
+    }
+
     function toMapByFile(mappings) {
       const map = new Map();
       (mappings || []).forEach((item) => {
@@ -377,16 +469,59 @@ ADMIN_UI_HTML = r"""<!doctype html>
       return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
     }
 
+    function updateFlow() {
+      const hasAsset = !!(state.selectedKey || document.getElementById("filename").value.trim());
+      const hasUid = !!document.getElementById("uid").value.trim();
+      const drmEnabled = !!document.getElementById("drmEnabled").checked;
+      const hasManifest = !!(
+        document.getElementById("hlsManifest").value.trim()
+        || document.getElementById("dashManifest").value.trim()
+      );
+
+      const steps = [
+        { key: "1", done: hasAsset, active: !hasAsset },
+        { key: "2", done: hasUid, active: hasAsset && !hasUid },
+        { key: "3", done: (!drmEnabled || hasManifest) && hasUid, active: hasAsset && hasUid && drmEnabled && !hasManifest }
+      ];
+      steps.forEach((step) => {
+        const node = document.querySelector(".flow-step[data-step='" + step.key + "']");
+        if (!node) return;
+        node.classList.toggle("done", !!step.done);
+        node.classList.toggle("active", !!step.active);
+      });
+
+      const saveBtn = document.getElementById("saveMapping");
+      if (saveBtn) {
+        saveBtn.disabled = !(hasAsset && hasUid && (!drmEnabled || hasManifest));
+      }
+    }
+
+    function markDirty() {
+      state.dirty = true;
+      updateFlow();
+    }
+
+    function clearDirty() {
+      state.dirty = false;
+      updateFlow();
+    }
+
     function suggestUploadKeyFromFile() {
       const keyInput = document.getElementById("uploadKey");
-      if (keyInput.value.trim()) return;
       const fileEl = document.getElementById("uploadFile");
       const file = fileEl.files && fileEl.files[0];
-      if (!file) return;
-      let prefix = document.getElementById("prefix").value.trim();
-      prefix = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+      if (!file) {
+        document.getElementById("uploadHint").textContent = "选择文件后会自动填充推荐 key。";
+        return;
+      }
+      if (keyInput.value.trim()) {
+        document.getElementById("uploadHint").textContent = "已手动填写 key，上传时将优先使用手动值。";
+        return;
+      }
+      const prefix = normalizePrefix(document.getElementById("prefix").value);
       const fileName = String(file.name || "").replace(/^\/+/, "");
       keyInput.value = prefix ? (prefix + "/" + fileName) : fileName;
+      document.getElementById("uploadHint").textContent = "推荐 key 已填充，可直接上传。";
     }
 
     function clearMappingForm() {
@@ -396,7 +531,9 @@ ADMIN_UI_HTML = r"""<!doctype html>
         "certWidevine", "certFairplay", "certPlayready"
       ].forEach((id) => { document.getElementById(id).value = ""; });
       document.getElementById("drmEnabled").checked = false;
+      document.getElementById("drmAdvanced").open = false;
       document.getElementById("drmHeaders").value = "{}";
+      clearDirty();
     }
 
     function fillFormFromMapping(mapping) {
@@ -418,6 +555,9 @@ ADMIN_UI_HTML = r"""<!doctype html>
       document.getElementById("certFairplay").value = certs.fairplay || "";
       document.getElementById("certPlayready").value = certs.playready || "";
       document.getElementById("drmHeaders").value = JSON.stringify(headers || {}, null, 2);
+      document.getElementById("drmAdvanced").open = !!drm.enabled;
+      applySelectedAsset(mapping.filename || "", true);
+      clearDirty();
     }
 
     function formToDrmConfig() {
@@ -445,7 +585,12 @@ ADMIN_UI_HTML = r"""<!doctype html>
       });
     }
 
-    function applySelectedAsset(key) {
+    function applySelectedAsset(key, force = false) {
+      const normalized = key || "";
+      if (!force && state.dirty && normalized !== state.selectedKey) {
+        const proceed = confirm("当前有未保存修改，切换资源可能覆盖 filename。是否继续？");
+        if (!proceed) return;
+      }
       state.selectedKey = key || "";
       if (key) {
         document.getElementById("filename").value = key;
@@ -462,6 +607,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
         : "当前资源尚未被映射";
       document.getElementById("selectedAssetHint").textContent = key ? ("已选资源: " + key + " | " + hint) : "先在左侧选择资源，再配置映射。";
       renderAssets();
+      updateFlow();
     }
 
     function renderMappings() {
@@ -528,9 +674,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
 
     async function refreshAll() {
       try {
-        setMsg("assetMsg", "刷新中...", true);
+        setMsg("assetMsg", "正在同步资源与映射...", true);
         await Promise.all([loadMe(), loadMappings(), loadAssets()]);
-        setMsg("assetMsg", "刷新完成", true);
+        setMsg("assetMsg", "同步完成", true);
+        updateFlow();
       } catch (e) {
         setMsg("assetMsg", "刷新失败: " + e.message, false);
       }
@@ -578,6 +725,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
       let drm;
       try {
         drm = formToDrmConfig();
+        if (drm.enabled && !(drm.hls_manifest || drm.dash_manifest)) {
+          setMsg("mappingMsg", "启用 DRM 时请至少填写 HLS 或 DASH 清单路径", false);
+          return;
+        }
       } catch (e) {
         setMsg("mappingMsg", "DRM Header JSON 解析失败: " + e.message, false);
         return;
@@ -591,7 +742,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
           body: JSON.stringify(payload)
         });
         setMsg("mappingMsg", "保存成功", true);
-        applySelectedAsset(filename);
+        clearDirty();
+        applySelectedAsset(filename, true);
         await loadMappings();
         renderAssets();
       } catch (e) {
@@ -619,7 +771,6 @@ ADMIN_UI_HTML = r"""<!doctype html>
         return;
       }
       fillFormFromMapping(mapping);
-      applySelectedAsset(mapping.filename || "");
       setMsg("mappingMsg", "已加载 UID: " + uid, true);
     }
 
@@ -633,6 +784,12 @@ ADMIN_UI_HTML = r"""<!doctype html>
       try {
         await api("/mappings/" + encodeURIComponent(uid), { method: "DELETE" });
         setMsg("mappingMsg", "已删除: " + uid, true);
+        if (document.getElementById("uid").value.trim().toUpperCase() === uid) {
+          clearMappingForm();
+          if (state.selectedKey) {
+            document.getElementById("filename").value = state.selectedKey;
+          }
+        }
         await loadMappings();
         renderAssets();
       } catch (e) {
@@ -658,6 +815,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
         if (state.selectedKey === key) {
           state.selectedKey = "";
           document.getElementById("selectedAssetHint").textContent = "先在左侧选择资源，再配置映射。";
+          updateFlow();
         }
         await loadAssets();
       } catch (e) {
@@ -698,7 +856,6 @@ ADMIN_UI_HTML = r"""<!doctype html>
         const mapping = state.mappingByUid.get(uid);
         if (mapping) {
           fillFormFromMapping(mapping);
-          applySelectedAsset(mapping.filename || "");
           setMsg("mappingMsg", "已载入映射: " + uid, true);
         }
         return;
@@ -710,6 +867,12 @@ ADMIN_UI_HTML = r"""<!doctype html>
     });
 
     document.getElementById("uploadFile").addEventListener("change", suggestUploadKeyFromFile);
+    document.getElementById("uploadKey").addEventListener("input", () => {
+      const raw = document.getElementById("uploadKey").value.trim();
+      document.getElementById("uploadHint").textContent = raw
+        ? "将使用手动 key 上传。"
+        : "选择文件后会自动填充推荐 key。";
+    });
     document.getElementById("prefix").addEventListener("change", () => {
       suggestUploadKeyFromFile();
       loadAssets().catch((e) => setMsg("assetMsg", "加载资源失败: " + e.message, false));
@@ -719,9 +882,34 @@ ADMIN_UI_HTML = r"""<!doctype html>
     document.getElementById("saveMapping").onclick = saveMapping;
     document.getElementById("loadMappingByUid").onclick = loadMappingByUid;
     document.getElementById("deleteMappingByUid").onclick = deleteMappingByUid;
+    document.getElementById("clearForm").onclick = () => {
+      if (state.dirty) {
+        const proceed = confirm("确认清空当前未保存内容？");
+        if (!proceed) return;
+      }
+      clearMappingForm();
+      if (state.selectedKey) {
+        document.getElementById("filename").value = state.selectedKey;
+      }
+      updateFlow();
+    };
+
+    FORM_FIELDS.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const eventName = (el.type === "checkbox") ? "change" : "input";
+      el.addEventListener(eventName, () => {
+        markDirty();
+      });
+    });
+    document.getElementById("drmEnabled").addEventListener("change", () => {
+      document.getElementById("drmAdvanced").open = !!document.getElementById("drmEnabled").checked;
+      updateFlow();
+    });
 
     clearMappingForm();
     refreshAll();
+    updateFlow();
   </script>
 </body>
 </html>
