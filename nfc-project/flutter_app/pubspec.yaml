@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   nfc_manager: ^3.3.0
-  better_player: ^0.0.84
+  better_player_plus: ^1.1.5
   http: ^1.1.0
 
 dependency_overrides:

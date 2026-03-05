@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutter_app/main.dart';
+import 'package:nfc_video_player/main.dart';
 
 void main() {
   testWidgets('App launches with scan tab', (WidgetTester tester) async {
