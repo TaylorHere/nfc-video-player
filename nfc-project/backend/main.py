@@ -776,6 +776,21 @@ class Default(WorkerEntrypoint):
             status=403,
         )
 
+    async def _read_binary_body(self, obj):
+        # Runtime API naming differs between Worker Python versions.
+        for name in ("arrayBuffer", "array_buffer"):
+            method = getattr(obj, name, None)
+            if callable(method):
+                return await method()
+
+        # Fallback: read text and encode.
+        text_method = getattr(obj, "text", None)
+        if callable(text_method):
+            text_value = await text_method()
+            return str(text_value).encode("utf-8")
+
+        raise AttributeError("No supported binary body reader on object")
+
     async def _upsert_mapping(
         self, uid: str, filename: str, name: str | None, drm_config: dict | None
     ) -> dict:
@@ -908,8 +923,10 @@ class Default(WorkerEntrypoint):
         if not bucket:
             raise ValueError("VIDEO_BUCKET binding is missing")
 
-        body = await request.arrayBuffer()
-        body_len = int(getattr(body, "byteLength", 0))
+        body = await self._read_binary_body(request)
+        body_len = int(getattr(body, "byteLength", 0) or 0)
+        if body_len <= 0 and isinstance(body, (bytes, bytearray)):
+            body_len = len(body)
         if body_len <= 0:
             raise ValueError("empty upload body")
 
@@ -1540,7 +1557,7 @@ class Default(WorkerEntrypoint):
 
         fetch_options = {"method": method, "headers": proxy_headers}
         if method == "POST":
-            fetch_options["body"] = await request.arrayBuffer()
+            fetch_options["body"] = await self._read_binary_body(request)
 
         upstream = await js_fetch(str(upstream_url), to_js(fetch_options))
         status = int(upstream.status)
@@ -1553,7 +1570,7 @@ class Default(WorkerEntrypoint):
         if method == "HEAD":
             body = ""
         else:
-            body = await upstream.arrayBuffer()
+            body = await self._read_binary_body(upstream)
 
         return JsResponse.new(
             body,
@@ -1605,7 +1622,7 @@ class Default(WorkerEntrypoint):
         if method == "HEAD":
             body = ""
         else:
-            body = await upstream.arrayBuffer()
+            body = await self._read_binary_body(upstream)
 
         return JsResponse.new(
             body,
