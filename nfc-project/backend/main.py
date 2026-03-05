@@ -27,87 +27,259 @@ ADMIN_UI_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NFC 资源管理后台</title>
+  <title>NFC 资源浏览器</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; background: #0b1020; color: #e5e7eb; }
-    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
-    .card { background: #111a33; border: 1px solid #24345f; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    h1 { font-size: 24px; margin: 0 0 8px; }
-    h2 { font-size: 18px; margin: 0 0 10px; }
-    input, textarea, button { border-radius: 8px; border: 1px solid #334572; background: #0d1730; color: #e5e7eb; padding: 8px 10px; }
-    input, textarea { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
-    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    button { cursor: pointer; background: #1f4ae0; border-color: #3366ff; }
-    button.secondary { background: #172443; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #111a33;
+      --line: #263b69;
+      --muted: #9fb2dd;
+      --text: #e8edff;
+      --ok: #86efac;
+      --err: #fda4af;
+      --brand: #3366ff;
+      --danger: #7f1d1d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); white-space: pre-wrap; }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr auto;
+      gap: 8px;
+      align-items: end;
+      margin-bottom: 10px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 12px;
+    }
+    .section-title {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+    .table-wrap { max-height: 62vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { border-bottom: 1px solid #223359; padding: 8px; text-align: left; vertical-align: top; }
-    .muted { color: #95a4c6; font-size: 12px; }
-    .danger { background: #7f1d1d; border-color: #991b1b; }
-    .ok { color: #86efac; }
-    .err { color: #fca5a5; white-space: pre-wrap; }
+    th, td { border-bottom: 1px solid #22345a; padding: 7px 8px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: #0f1831; z-index: 2; }
+    tr.active { background: #1a2848; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    input, textarea, button {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #365080;
+      background: #0e1730;
+      color: var(--text);
+      padding: 8px 10px;
+    }
+    textarea { min-height: 94px; resize: vertical; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    button {
+      cursor: pointer;
+      background: var(--brand);
+      border-color: #4a74ff;
+      width: auto;
+      padding: 8px 12px;
+    }
+    button.secondary { background: #1a2c50; }
+    button.danger { background: var(--danger); border-color: #a82727; }
+    .inline { display: inline-flex; align-items: center; gap: 8px; }
+    .badge {
+      display: inline-block;
+      border: 1px solid #3f5f9b;
+      border-radius: 999px;
+      padding: 1px 8px;
+      font-size: 11px;
+      color: #bad0ff;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>NFC 资源管理后台</h1>
-    <div class="muted">基于 Cloudflare Access 鉴权。仅授权用户可访问。</div>
-    <div id="whoami" class="card mono">加载中...</div>
-
-    <div class="card">
-      <h2>映射管理（UID -> 资源/DRM）</h2>
-      <div class="row">
-        <div>
-          <label>UID</label>
-          <input id="uid" placeholder="04999911223344" />
-          <label>默认资源 key（filename）</label>
-          <input id="filename" placeholder="demo/master.m3u8" />
-          <label>名称（可选）</label>
-          <input id="name" placeholder="DRM Card" />
-          <button id="saveMapping">保存映射</button>
-        </div>
-        <div>
-          <label>DRM JSON（可选）</label>
-          <textarea id="drmJson" class="mono" placeholder='{"enabled":true,"hls_manifest":"demo/master.m3u8","licenses":{"widevine":"https://...","fairplay":"https://..."}}'></textarea>
-          <div class="muted">留空表示非 DRM。支持 licenses/certificates/headers 字段。</div>
-        </div>
+    <div class="top">
+      <div>
+        <h1>NFC 资源浏览器</h1>
+        <div class="muted">以资源为中心：上传、删除、下载、映射与 DRM 配置一体化</div>
       </div>
-      <div style="margin-top:8px;">
-        <button class="secondary" id="refreshMappings">刷新映射列表</button>
-      </div>
-      <div id="mappingMsg" class="mono"></div>
-      <table id="mappingTable">
-        <thead><tr><th>UID</th><th>文件</th><th>名称</th><th>DRM</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div id="whoami" class="mono muted">加载中...</div>
     </div>
 
-    <div class="card">
-      <h2>R2 资源管理</h2>
-      <div class="row">
+    <div class="panel" style="margin-bottom:12px;">
+      <div class="toolbar">
         <div>
-          <label>前缀过滤</label>
+          <label class="muted">资源前缀</label>
           <input id="prefix" placeholder="demo/" />
-          <button class="secondary" id="refreshAssets">刷新资源列表</button>
         </div>
         <div>
-          <label>上传 key（对象路径）</label>
+          <label class="muted">上传 key（留空自动=前缀+文件名）</label>
           <input id="uploadKey" placeholder="demo/master.m3u8" />
+        </div>
+        <div>
+          <label class="muted">选择文件</label>
           <input type="file" id="uploadFile" />
-          <button id="uploadBtn">上传到 R2</button>
+        </div>
+        <div class="actions">
+          <button class="secondary" id="refreshAll">刷新</button>
+          <button id="uploadBtn">上传</button>
         </div>
       </div>
-      <div id="assetMsg" class="mono"></div>
-      <table id="assetTable">
-        <thead><tr><th>Key</th><th>大小(bytes)</th><th>更新时间</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div id="assetMsg" class="mono muted"></div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2 class="section-title">资源列表</h2>
+        <div class="table-wrap">
+          <table id="assetTable">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>大小</th>
+                <th>更新时间</th>
+                <th>映射</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="section-title">映射与 DRM 详情</h2>
+        <div class="muted" id="selectedAssetHint">先在左侧选择资源，再配置映射。</div>
+        <div class="grid2" style="margin-top:8px;">
+          <div>
+            <label class="muted">UID</label>
+            <input id="uid" placeholder="04999911223344" />
+          </div>
+          <div>
+            <label class="muted">名称</label>
+            <input id="name" placeholder="DRM Card" />
+          </div>
+        </div>
+        <div style="margin-top:8px;">
+          <label class="muted">资源 key (filename)</label>
+          <input id="filename" class="mono" placeholder="demo/master.m3u8" />
+        </div>
+        <div style="margin-top:8px;" class="inline">
+          <input type="checkbox" id="drmEnabled" style="width:auto;" />
+          <label for="drmEnabled">启用 DRM</label>
+          <span class="badge">建议 HLS(.m3u8)/DASH(.mpd) 使用清单文件</span>
+        </div>
+
+        <div class="grid2" style="margin-top:8px;">
+          <div>
+            <label class="muted">HLS Manifest</label>
+            <input id="hlsManifest" class="mono" placeholder="demo/master.m3u8" />
+          </div>
+          <div>
+            <label class="muted">DASH Manifest</label>
+            <input id="dashManifest" class="mono" placeholder="demo/master.mpd" />
+          </div>
+        </div>
+
+        <div class="grid3" style="margin-top:8px;">
+          <div>
+            <label class="muted">Widevine License</label>
+            <input id="licWidevine" placeholder="https://..." />
+          </div>
+          <div>
+            <label class="muted">FairPlay License</label>
+            <input id="licFairplay" placeholder="https://..." />
+          </div>
+          <div>
+            <label class="muted">PlayReady License</label>
+            <input id="licPlayready" placeholder="https://..." />
+          </div>
+        </div>
+
+        <div class="grid3" style="margin-top:8px;">
+          <div>
+            <label class="muted">Widevine Cert</label>
+            <input id="certWidevine" placeholder="https://..." />
+          </div>
+          <div>
+            <label class="muted">FairPlay Cert</label>
+            <input id="certFairplay" placeholder="https://..." />
+          </div>
+          <div>
+            <label class="muted">PlayReady Cert</label>
+            <input id="certPlayready" placeholder="https://..." />
+          </div>
+        </div>
+
+        <div style="margin-top:8px;">
+          <label class="muted">DRM Header JSON（可选，格式: {"widevine":{"x-token":"..."}}）</label>
+          <textarea id="drmHeaders" class="mono" placeholder="{}"></textarea>
+        </div>
+
+        <div class="actions" style="margin-top:8px;">
+          <button id="saveMapping">保存映射</button>
+          <button class="secondary" id="loadMappingByUid">按 UID 加载</button>
+          <button class="danger" id="deleteMappingByUid">删除 UID 映射</button>
+        </div>
+        <div id="mappingMsg" class="mono muted" style="margin-top:8px;"></div>
+
+        <div style="margin-top:12px;">
+          <h3 class="section-title">映射列表</h3>
+          <div class="table-wrap" style="max-height:220px;">
+            <table id="mappingTable">
+              <thead><tr><th>UID</th><th>filename</th><th>DRM</th><th>操作</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
     const apiBase = "/admin/api";
+    const state = {
+      assets: [],
+      mappings: [],
+      mappingByUid: new Map(),
+      mappingsByFile: new Map(),
+      selectedKey: ""
+    };
+
+    function esc(v) {
+      return String(v ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
 
     function setMsg(id, text, ok = true) {
       const el = document.getElementById(id);
@@ -127,134 +299,207 @@ ADMIN_UI_HTML = r"""<!doctype html>
       return data;
     }
 
-    function esc(v) {
-      return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    function cleanObject(obj) {
+      const out = {};
+      Object.entries(obj || {}).forEach(([k, v]) => {
+        if (v === null || v === undefined) return;
+        if (typeof v === "string" && !v.trim()) return;
+        if (typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0) return;
+        out[k] = v;
+      });
+      return out;
+    }
+
+    function toMapByFile(mappings) {
+      const map = new Map();
+      (mappings || []).forEach((item) => {
+        const key = String(item.filename || "").trim();
+        if (!key) return;
+        const list = map.get(key) || [];
+        list.push(item);
+        map.set(key, list);
+      });
+      return map;
+    }
+
+    function fmtBytes(bytes) {
+      const n = Number(bytes || 0);
+      if (!Number.isFinite(n) || n < 1024) return String(n || 0);
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+      return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+    }
+
+    function suggestUploadKeyFromFile() {
+      const keyInput = document.getElementById("uploadKey");
+      if (keyInput.value.trim()) return;
+      const fileEl = document.getElementById("uploadFile");
+      const file = fileEl.files && fileEl.files[0];
+      if (!file) return;
+      let prefix = document.getElementById("prefix").value.trim();
+      prefix = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+      const fileName = String(file.name || "").replace(/^\/+/, "");
+      keyInput.value = prefix ? (prefix + "/" + fileName) : fileName;
+    }
+
+    function clearMappingForm() {
+      [
+        "uid", "name", "filename", "hlsManifest", "dashManifest",
+        "licWidevine", "licFairplay", "licPlayready",
+        "certWidevine", "certFairplay", "certPlayready"
+      ].forEach((id) => { document.getElementById(id).value = ""; });
+      document.getElementById("drmEnabled").checked = false;
+      document.getElementById("drmHeaders").value = "{}";
+    }
+
+    function fillFormFromMapping(mapping) {
+      if (!mapping) return;
+      const drm = mapping.drm || {};
+      const licenses = drm.licenses || {};
+      const certs = drm.certificates || {};
+      const headers = drm.headers || {};
+      document.getElementById("uid").value = mapping.uid || "";
+      document.getElementById("name").value = mapping.name || "";
+      document.getElementById("filename").value = mapping.filename || "";
+      document.getElementById("drmEnabled").checked = !!drm.enabled;
+      document.getElementById("hlsManifest").value = drm.hls_manifest || "";
+      document.getElementById("dashManifest").value = drm.dash_manifest || "";
+      document.getElementById("licWidevine").value = licenses.widevine || "";
+      document.getElementById("licFairplay").value = licenses.fairplay || "";
+      document.getElementById("licPlayready").value = licenses.playready || "";
+      document.getElementById("certWidevine").value = certs.widevine || "";
+      document.getElementById("certFairplay").value = certs.fairplay || "";
+      document.getElementById("certPlayready").value = certs.playready || "";
+      document.getElementById("drmHeaders").value = JSON.stringify(headers || {}, null, 2);
+    }
+
+    function formToDrmConfig() {
+      const enabled = document.getElementById("drmEnabled").checked;
+      let headers = {};
+      const headersRaw = document.getElementById("drmHeaders").value.trim();
+      if (headersRaw) {
+        headers = JSON.parse(headersRaw);
+      }
+      return cleanObject({
+        enabled,
+        hls_manifest: document.getElementById("hlsManifest").value.trim(),
+        dash_manifest: document.getElementById("dashManifest").value.trim(),
+        licenses: cleanObject({
+          widevine: document.getElementById("licWidevine").value.trim(),
+          fairplay: document.getElementById("licFairplay").value.trim(),
+          playready: document.getElementById("licPlayready").value.trim()
+        }),
+        certificates: cleanObject({
+          widevine: document.getElementById("certWidevine").value.trim(),
+          fairplay: document.getElementById("certFairplay").value.trim(),
+          playready: document.getElementById("certPlayready").value.trim()
+        }),
+        headers: cleanObject(headers)
+      });
+    }
+
+    function applySelectedAsset(key) {
+      state.selectedKey = key || "";
+      if (key) {
+        document.getElementById("filename").value = key;
+        if (key.endsWith(".m3u8") && !document.getElementById("hlsManifest").value.trim()) {
+          document.getElementById("hlsManifest").value = key;
+        }
+        if (key.endsWith(".mpd") && !document.getElementById("dashManifest").value.trim()) {
+          document.getElementById("dashManifest").value = key;
+        }
+      }
+      const mapped = state.mappingsByFile.get(key) || [];
+      const hint = mapped.length
+        ? ("当前资源已映射 UID: " + mapped.map((m) => m.uid).join(", "))
+        : "当前资源尚未被映射";
+      document.getElementById("selectedAssetHint").textContent = key ? ("已选资源: " + key + " | " + hint) : "先在左侧选择资源，再配置映射。";
+      renderAssets();
+    }
+
+    function renderMappings() {
+      const tbody = document.querySelector("#mappingTable tbody");
+      tbody.innerHTML = state.mappings.map((row) => {
+        const drm = row.drm && row.drm.enabled ? "enabled" : "disabled";
+        return "<tr>"
+          + "<td class='mono'>" + esc(row.uid) + "</td>"
+          + "<td class='mono'>" + esc(row.filename) + "</td>"
+          + "<td>" + drm + "</td>"
+          + "<td class='actions'>"
+          + "<button class='secondary' data-action='use-mapping' data-uid='" + esc(row.uid) + "'>编辑</button>"
+          + "<button class='danger' data-action='del-mapping' data-uid='" + esc(row.uid) + "'>删除</button>"
+          + "</td>"
+          + "</tr>";
+      }).join("");
+    }
+
+    function renderAssets() {
+      const tbody = document.querySelector("#assetTable tbody");
+      tbody.innerHTML = state.assets.map((row) => {
+        const mapped = state.mappingsByFile.get(row.key) || [];
+        const mappedHint = mapped.length ? (mapped.length + " 个") : "-";
+        const drmHint = mapped.some((m) => m.drm && m.drm.enabled) ? "DRM" : "";
+        const activeClass = row.key === state.selectedKey ? " class='active'" : "";
+        return "<tr" + activeClass + ">"
+          + "<td class='mono'>" + esc(row.key) + (drmHint ? " <span class='badge'>" + drmHint + "</span>" : "") + "</td>"
+          + "<td>" + esc(fmtBytes(row.size)) + "</td>"
+          + "<td>" + esc(row.uploaded || "") + "</td>"
+          + "<td>" + esc(mappedHint) + "</td>"
+          + "<td class='actions'>"
+          + "<button class='secondary' data-action='pick' data-key='" + esc(row.key) + "'>选择</button>"
+          + "<button class='secondary' data-action='map' data-key='" + esc(row.key) + "'>映射</button>"
+          + "<button class='secondary' data-action='download' data-key='" + esc(row.key) + "'>下载</button>"
+          + "<button class='danger' data-action='delete' data-key='" + esc(row.key) + "'>删除</button>"
+          + "</td>"
+          + "</tr>";
+      }).join("");
     }
 
     async function loadMe() {
       try {
         const data = await api("/me");
-        document.getElementById("whoami").textContent =
-          "已登录: " + (data.email || data.user || "unknown") + " | auth=" + (data.auth || "unknown");
+        document.getElementById("whoami").textContent = "已登录: " + (data.email || "unknown") + " (" + (data.auth || "unknown") + ")";
       } catch (e) {
         document.getElementById("whoami").textContent = "鉴权失败: " + e.message;
       }
     }
 
     async function loadMappings() {
-      try {
-        const data = await api("/mappings");
-        const rows = Array.isArray(data.items) ? data.items : [];
-        const tbody = document.querySelector("#mappingTable tbody");
-        tbody.innerHTML = rows.map(row => {
-          const drm = row.drm && row.drm.enabled ? "enabled" : "disabled";
-          return "<tr>"
-            + "<td class='mono'>" + esc(row.uid) + "</td>"
-            + "<td class='mono'>" + esc(row.filename) + "</td>"
-            + "<td>" + esc(row.name || "") + "</td>"
-            + "<td>" + drm + "</td>"
-            + "<td><button class='danger' data-del='" + esc(row.uid) + "'>删除</button></td>"
-            + "</tr>";
-        }).join("");
-        tbody.querySelectorAll("button[data-del]").forEach(btn => {
-          btn.onclick = async () => {
-            const uid = btn.getAttribute("data-del");
-            if (!confirm("确认删除映射 " + uid + " ?")) return;
-            try {
-              await api("/mappings/" + encodeURIComponent(uid), { method: "DELETE" });
-              setMsg("mappingMsg", "已删除: " + uid, true);
-              await loadMappings();
-            } catch (e) {
-              setMsg("mappingMsg", "删除失败: " + e.message, false);
-            }
-          };
-        });
-      } catch (e) {
-        setMsg("mappingMsg", "加载映射失败: " + e.message, false);
-      }
-    }
-
-    async function saveMapping() {
-      const uid = document.getElementById("uid").value.trim();
-      const filename = document.getElementById("filename").value.trim();
-      const name = document.getElementById("name").value.trim();
-      const drmRaw = document.getElementById("drmJson").value.trim();
-      if (!uid || !filename) {
-        setMsg("mappingMsg", "UID 和 filename 必填", false);
-        return;
-      }
-      let drm = undefined;
-      if (drmRaw) {
-        try {
-          drm = JSON.parse(drmRaw);
-        } catch (e) {
-          setMsg("mappingMsg", "DRM JSON 解析失败: " + e.message, false);
-          return;
-        }
-      }
-      const payload = { uid, filename };
-      if (name) payload.name = name;
-      if (drm !== undefined) payload.drm = drm;
-      try {
-        await api("/mappings", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        setMsg("mappingMsg", "保存成功", true);
-        await loadMappings();
-      } catch (e) {
-        setMsg("mappingMsg", "保存失败: " + e.message, false);
-      }
+      const data = await api("/mappings");
+      state.mappings = Array.isArray(data.items) ? data.items : [];
+      state.mappingByUid = new Map(state.mappings.map((item) => [String(item.uid || "").toUpperCase(), item]));
+      state.mappingsByFile = toMapByFile(state.mappings);
+      renderMappings();
     }
 
     async function loadAssets() {
       const prefix = document.getElementById("prefix").value.trim();
+      const data = await api("/assets" + (prefix ? ("?prefix=" + encodeURIComponent(prefix)) : ""));
+      state.assets = Array.isArray(data.items) ? data.items : [];
+      renderAssets();
+    }
+
+    async function refreshAll() {
       try {
-        const data = await api("/assets" + (prefix ? ("?prefix=" + encodeURIComponent(prefix)) : ""));
-        const rows = Array.isArray(data.items) ? data.items : [];
-        const tbody = document.querySelector("#assetTable tbody");
-        tbody.innerHTML = rows.map(row => {
-          return "<tr>"
-            + "<td class='mono'>" + esc(row.key) + "</td>"
-            + "<td>" + esc(row.size) + "</td>"
-            + "<td>" + esc(row.uploaded || "") + "</td>"
-            + "<td><button class='danger' data-del-asset='" + esc(row.key) + "'>删除</button></td>"
-            + "</tr>";
-        }).join("");
-        tbody.querySelectorAll("button[data-del-asset]").forEach(btn => {
-          btn.onclick = async () => {
-            const key = btn.getAttribute("data-del-asset");
-            if (!confirm("确认删除资源 " + key + " ?")) return;
-            try {
-              await api("/assets/" + encodeURIComponent(key), { method: "DELETE" });
-              setMsg("assetMsg", "已删除: " + key, true);
-              await loadAssets();
-            } catch (e) {
-              setMsg("assetMsg", "删除失败: " + e.message, false);
-            }
-          };
-        });
+        setMsg("assetMsg", "刷新中...", true);
+        await Promise.all([loadMe(), loadMappings(), loadAssets()]);
+        setMsg("assetMsg", "刷新完成", true);
       } catch (e) {
-        setMsg("assetMsg", "加载资源失败: " + e.message, false);
+        setMsg("assetMsg", "刷新失败: " + e.message, false);
       }
     }
 
     async function uploadAsset() {
-      const keyInput = document.getElementById("uploadKey");
-      let key = keyInput.value.trim();
       const fileEl = document.getElementById("uploadFile");
       const file = fileEl.files && fileEl.files[0];
       if (!file) {
         setMsg("assetMsg", "请选择上传文件", false);
         return;
       }
+      suggestUploadKeyFromFile();
+      const key = document.getElementById("uploadKey").value.trim();
       if (!key) {
-        suggestUploadKeyFromFile();
-        key = keyInput.value.trim();
-      }
-      if (!key) {
-        setMsg("assetMsg", "请填写 key 并选择文件", false);
+        setMsg("assetMsg", "请填写 key", false);
         return;
       }
       try {
@@ -267,38 +512,169 @@ ADMIN_UI_HTML = r"""<!doctype html>
           body: file
         });
         setMsg("assetMsg", "上传成功: " + key, true);
+        document.getElementById("uploadKey").value = "";
+        fileEl.value = "";
         await loadAssets();
       } catch (e) {
         setMsg("assetMsg", "上传失败: " + e.message, false);
       }
     }
 
-    function suggestUploadKeyFromFile() {
-      const keyInput = document.getElementById("uploadKey");
-      const fileEl = document.getElementById("uploadFile");
-      const file = fileEl.files && fileEl.files[0];
-      if (!file) return;
-
-      const prefixInput = document.getElementById("prefix");
-      const prefixRaw = (prefixInput.value || "").trim();
-      let prefix = prefixRaw.replace(/^\/+/, "").replace(/\/+$/, "");
-      const fileName = (file.name || "").replace(/^\/+/, "");
-      const suggested = prefix ? (prefix + "/" + fileName) : fileName;
-      if (suggested) {
-        keyInput.value = suggested;
+    async function saveMapping() {
+      const uid = document.getElementById("uid").value.trim().toUpperCase();
+      const filename = document.getElementById("filename").value.trim();
+      const name = document.getElementById("name").value.trim();
+      if (!uid || !filename) {
+        setMsg("mappingMsg", "UID 和 filename 必填", false);
+        return;
+      }
+      let drm;
+      try {
+        drm = formToDrmConfig();
+      } catch (e) {
+        setMsg("mappingMsg", "DRM Header JSON 解析失败: " + e.message, false);
+        return;
+      }
+      const payload = { uid, filename, drm };
+      if (name) payload.name = name;
+      try {
+        await api("/mappings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        setMsg("mappingMsg", "保存成功", true);
+        applySelectedAsset(filename);
+        await loadMappings();
+        renderAssets();
+      } catch (e) {
+        setMsg("mappingMsg", "保存失败: " + e.message, false);
       }
     }
 
-    document.getElementById("saveMapping").onclick = saveMapping;
-    document.getElementById("refreshMappings").onclick = loadMappings;
-    document.getElementById("refreshAssets").onclick = loadAssets;
-    document.getElementById("uploadBtn").onclick = uploadAsset;
-    document.getElementById("uploadFile").addEventListener("change", suggestUploadKeyFromFile);
-    document.getElementById("prefix").addEventListener("change", suggestUploadKeyFromFile);
+    async function loadMappingByUid() {
+      const uid = document.getElementById("uid").value.trim().toUpperCase();
+      if (!uid) {
+        setMsg("mappingMsg", "请先输入 UID", false);
+        return;
+      }
+      let mapping = state.mappingByUid.get(uid);
+      if (!mapping) {
+        try {
+          const data = await api("/mappings/" + encodeURIComponent(uid));
+          mapping = data.item || null;
+        } catch (_) {
+          mapping = null;
+        }
+      }
+      if (!mapping) {
+        setMsg("mappingMsg", "未找到 UID 映射: " + uid, false);
+        return;
+      }
+      fillFormFromMapping(mapping);
+      applySelectedAsset(mapping.filename || "");
+      setMsg("mappingMsg", "已加载 UID: " + uid, true);
+    }
 
-    loadMe();
-    loadMappings();
-    loadAssets();
+    async function deleteMappingByUid() {
+      const uid = document.getElementById("uid").value.trim().toUpperCase();
+      if (!uid) {
+        setMsg("mappingMsg", "请先输入 UID", false);
+        return;
+      }
+      if (!confirm("确认删除映射 " + uid + " ?")) return;
+      try {
+        await api("/mappings/" + encodeURIComponent(uid), { method: "DELETE" });
+        setMsg("mappingMsg", "已删除: " + uid, true);
+        await loadMappings();
+        renderAssets();
+      } catch (e) {
+        setMsg("mappingMsg", "删除失败: " + e.message, false);
+      }
+    }
+
+    async function downloadAsset(key) {
+      try {
+        const data = await api("/assets/sign?key=" + encodeURIComponent(key));
+        if (!data || !data.url) throw new Error("未返回下载地址");
+        window.open(data.url, "_blank", "noopener");
+      } catch (e) {
+        setMsg("assetMsg", "下载地址生成失败: " + e.message, false);
+      }
+    }
+
+    async function deleteAsset(key) {
+      if (!confirm("确认删除资源 " + key + " ?")) return;
+      try {
+        await api("/assets/" + encodeURIComponent(key), { method: "DELETE" });
+        setMsg("assetMsg", "已删除: " + key, true);
+        if (state.selectedKey === key) {
+          state.selectedKey = "";
+          document.getElementById("selectedAssetHint").textContent = "先在左侧选择资源，再配置映射。";
+        }
+        await loadAssets();
+      } catch (e) {
+        setMsg("assetMsg", "删除失败: " + e.message, false);
+      }
+    }
+
+    document.getElementById("assetTable").addEventListener("click", async (evt) => {
+      const btn = evt.target.closest("button[data-action]");
+      if (!btn) return;
+      const action = btn.getAttribute("data-action");
+      const key = btn.getAttribute("data-key");
+      if (action === "pick") {
+        applySelectedAsset(key);
+        return;
+      }
+      if (action === "map") {
+        applySelectedAsset(key);
+        document.getElementById("filename").value = key || "";
+        return;
+      }
+      if (action === "download") {
+        await downloadAsset(key);
+        return;
+      }
+      if (action === "delete") {
+        await deleteAsset(key);
+      }
+    });
+
+    document.getElementById("mappingTable").addEventListener("click", async (evt) => {
+      const btn = evt.target.closest("button[data-action]");
+      if (!btn) return;
+      const action = btn.getAttribute("data-action");
+      const uid = (btn.getAttribute("data-uid") || "").toUpperCase();
+      if (!uid) return;
+      if (action === "use-mapping") {
+        const mapping = state.mappingByUid.get(uid);
+        if (mapping) {
+          fillFormFromMapping(mapping);
+          applySelectedAsset(mapping.filename || "");
+          setMsg("mappingMsg", "已载入映射: " + uid, true);
+        }
+        return;
+      }
+      if (action === "del-mapping") {
+        document.getElementById("uid").value = uid;
+        await deleteMappingByUid();
+      }
+    });
+
+    document.getElementById("uploadFile").addEventListener("change", suggestUploadKeyFromFile);
+    document.getElementById("prefix").addEventListener("change", () => {
+      suggestUploadKeyFromFile();
+      loadAssets().catch((e) => setMsg("assetMsg", "加载资源失败: " + e.message, false));
+    });
+    document.getElementById("refreshAll").onclick = refreshAll;
+    document.getElementById("uploadBtn").onclick = uploadAsset;
+    document.getElementById("saveMapping").onclick = saveMapping;
+    document.getElementById("loadMappingByUid").onclick = loadMappingByUid;
+    document.getElementById("deleteMappingByUid").onclick = deleteMappingByUid;
+
+    clearMappingForm();
+    refreshAll();
   </script>
 </body>
 </html>
@@ -790,6 +1166,23 @@ class Default(WorkerEntrypoint):
             return str(text_value).encode("utf-8")
 
         raise AttributeError("No supported binary body reader on object")
+
+    async def _read_text_body(self, obj) -> str:
+        text_method = getattr(obj, "text", None)
+        if callable(text_method):
+            value = await text_method()
+            return str(value)
+        body = await self._read_binary_body(obj)
+        if isinstance(body, (bytes, bytearray, memoryview)):
+            return bytes(body).decode("utf-8", errors="replace")
+        if hasattr(body, "to_py"):
+            try:
+                py_body = body.to_py()
+                if isinstance(py_body, (bytes, bytearray, memoryview)):
+                    return bytes(py_body).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        return str(body)
 
     def _to_uint8_array(self, raw: bytes):
         data = bytes(raw)
@@ -1336,7 +1729,7 @@ class Default(WorkerEntrypoint):
 
     async def _handle_map(self, request):
         try:
-            body = await request.text()
+            body = await self._read_text_body(request)
             payload = json.loads(body) if body else {}
         except Exception:
             return _json_response({"error": "Invalid JSON body"}, status=400)
@@ -1390,7 +1783,10 @@ class Default(WorkerEntrypoint):
         except Exception:
             return _json_response({"error": "Invalid filename/object key"}, status=400)
 
-        mapping = await self._upsert_mapping(uid, filename, name, drm_config)
+        try:
+            mapping = await self._upsert_mapping(uid, filename, name, drm_config)
+        except Exception as err:
+            return _json_response({"error": f"Failed to save mapping: {err}"}, status=500)
         return _json_response(mapping)
 
     async def _handle_verify(self, request):
@@ -1721,23 +2117,43 @@ class Default(WorkerEntrypoint):
             )
 
         if subpath == "/mappings":
-            await self._ensure_schema()
+            try:
+                await self._ensure_schema()
+            except Exception as err:
+                return _json_response({"error": f"Schema initialization failed: {err}"}, status=500)
             if method == "GET":
-                items = await self._list_mappings()
-                return _json_response({"items": items})
+                try:
+                    items = await self._list_mappings()
+                    return _json_response({"items": items})
+                except Exception as err:
+                    return _json_response({"error": f"Failed to list mappings: {err}"}, status=500)
             if method == "POST":
                 return await self._handle_map(request)
             return _text_response("Method Not Allowed", status=405)
 
         if subpath.startswith("/mappings/"):
-            await self._ensure_schema()
-            if method != "DELETE":
-                return _text_response("Method Not Allowed", status=405)
+            try:
+                await self._ensure_schema()
+            except Exception as err:
+                return _json_response({"error": f"Schema initialization failed: {err}"}, status=500)
             uid = unquote(subpath[len("/mappings/") :]).strip().upper()
             if not uid:
                 return _json_response({"error": "uid is required"}, status=400)
-            await self._delete_mapping(uid)
-            return _json_response({"success": True, "uid": uid})
+            if method == "GET":
+                try:
+                    item = await self._get_mapping(uid)
+                except Exception as err:
+                    return _json_response({"error": f"Failed to load mapping: {err}"}, status=500)
+                if not item:
+                    return _json_response({"error": "mapping not found"}, status=404)
+                return _json_response({"item": item})
+            if method == "DELETE":
+                try:
+                    await self._delete_mapping(uid)
+                except Exception as err:
+                    return _json_response({"error": f"Failed to delete mapping: {err}"}, status=500)
+                return _json_response({"success": True, "uid": uid})
+            return _text_response("Method Not Allowed", status=405)
 
         if subpath == "/assets":
             if method != "GET":
@@ -1783,18 +2199,33 @@ class Default(WorkerEntrypoint):
             except Exception as err:
                 return _json_response({"error": str(err)}, status=500)
 
-        if subpath.startswith("/assets/"):
-            if method != "DELETE":
+        if subpath == "/assets/sign":
+            if method != "GET":
                 return _text_response("Method Not Allowed", status=405)
+            parsed_url = urlparse(str(request.url))
+            params = parse_qs(parsed_url.query)
+            key_raw = str(params.get("key", [""])[0] or "").strip()
+            if not key_raw:
+                return _json_response({"error": "key query parameter is required"}, status=400)
+            try:
+                key = _safe_object_key(key_raw)
+                url = self._issue_cdn_url(f"{parsed_url.scheme}://{parsed_url.netloc}", key)
+                return _json_response({"success": True, "key": key, "url": url})
+            except Exception as err:
+                return _json_response({"error": str(err)}, status=400)
+
+        if subpath.startswith("/assets/"):
             key_raw = unquote(subpath[len("/assets/") :]).strip()
             if not key_raw:
                 return _json_response({"error": "key is required"}, status=400)
-            try:
-                key = _safe_object_key(key_raw)
-                result = await self._delete_asset(key)
-                return _json_response({"success": True, **result})
-            except Exception as err:
-                return _json_response({"error": str(err)}, status=500)
+            if method == "DELETE":
+                try:
+                    key = _safe_object_key(key_raw)
+                    result = await self._delete_asset(key)
+                    return _json_response({"success": True, **result})
+                except Exception as err:
+                    return _json_response({"error": str(err)}, status=500)
+            return _text_response("Method Not Allowed", status=405)
 
         return _text_response("Not Found", status=404)
 
