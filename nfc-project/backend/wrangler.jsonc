@@ -3,6 +3,12 @@
   "name": "nfc-video-backend",
   "account_id": "41ec4b5d68707835aa96ac8d58099f31",
   "main": "main.py",
+  "routes": [
+    {
+      "pattern": "nfc.kaasong.com",
+      "custom_domain": true
+    }
+  ],
   "compatibility_date": "2026-03-03",
   "compatibility_flags": [
     "python_workers",
