@@ -166,6 +166,25 @@ uv run pywrangler deploy
 
 ---
 
+## GitHub Actions 自动部署
+
+已内置 workflow：`.github/workflows/deploy-backend.yml`
+
+- 触发条件：
+  - push 到 `main` 且改动 `nfc-project/backend/**`
+  - 手动触发 `workflow_dispatch`
+- 动作：
+  - 安装 `uv` / `wrangler`
+  - 运行 `uv sync`
+  - 运行 `uv run pywrangler deploy`
+
+在 GitHub 仓库设置以下 Secrets：
+
+- `CLOUDFLARE_API_TOKEN`（必填，需有 Workers/D1/R2 对应权限）
+- `CLOUDFLARE_ACCOUNT_ID`（必填，避免多账号时部署歧义）
+
+---
+
 ## Notes for DRM packaging
 
 - Use encrypted HLS/DASH with relative segment paths where possible.
