@@ -22,7 +22,7 @@ MEDIA_CACHE_SECONDS = 3600
 HLS_FAIRPLAY_LICENSE_PLACEHOLDER = "__FAIRPLAY_LICENSE_URL__"
 HLS_FAIRPLAY_CERTIFICATE_PLACEHOLDER = "__FAIRPLAY_CERTIFICATE_URL__"
 HLS_URI_ATTR_PATTERN = re.compile(r'URI="([^"]+)"')
-ADMIN_UI_HTML = """<!doctype html>
+ADMIN_UI_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -241,10 +241,19 @@ ADMIN_UI_HTML = """<!doctype html>
     }
 
     async function uploadAsset() {
-      const key = document.getElementById("uploadKey").value.trim();
+      const keyInput = document.getElementById("uploadKey");
+      let key = keyInput.value.trim();
       const fileEl = document.getElementById("uploadFile");
       const file = fileEl.files && fileEl.files[0];
-      if (!key || !file) {
+      if (!file) {
+        setMsg("assetMsg", "请选择上传文件", false);
+        return;
+      }
+      if (!key) {
+        suggestUploadKeyFromFile();
+        key = keyInput.value.trim();
+      }
+      if (!key) {
         setMsg("assetMsg", "请填写 key 并选择文件", false);
         return;
       }
@@ -264,10 +273,28 @@ ADMIN_UI_HTML = """<!doctype html>
       }
     }
 
+    function suggestUploadKeyFromFile() {
+      const keyInput = document.getElementById("uploadKey");
+      const fileEl = document.getElementById("uploadFile");
+      const file = fileEl.files && fileEl.files[0];
+      if (!file) return;
+
+      const prefixInput = document.getElementById("prefix");
+      const prefixRaw = (prefixInput.value || "").trim();
+      let prefix = prefixRaw.replace(/^\/+/, "").replace(/\/+$/, "");
+      const fileName = (file.name || "").replace(/^\/+/, "");
+      const suggested = prefix ? (prefix + "/" + fileName) : fileName;
+      if (suggested) {
+        keyInput.value = suggested;
+      }
+    }
+
     document.getElementById("saveMapping").onclick = saveMapping;
     document.getElementById("refreshMappings").onclick = loadMappings;
     document.getElementById("refreshAssets").onclick = loadAssets;
     document.getElementById("uploadBtn").onclick = uploadAsset;
+    document.getElementById("uploadFile").addEventListener("change", suggestUploadKeyFromFile);
+    document.getElementById("prefix").addEventListener("change", suggestUploadKeyFromFile);
 
     loadMe();
     loadMappings();
