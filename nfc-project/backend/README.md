@@ -57,6 +57,8 @@ In `wrangler.jsonc`:
   - `vars.DRM_WIDEVINE_LICENSE_HEADERS_JSON`
   - `vars.DRM_FAIRPLAY_LICENSE_HEADERS_JSON`
   - `vars.DRM_PLAYREADY_LICENSE_HEADERS_JSON`
+- Admin Access allowlist:
+  - `vars.ADMIN_EMAIL_ALLOWLIST` (comma-separated emails)
 
 Secrets:
 
@@ -64,12 +66,14 @@ Secrets:
 - `CDN_SIGN_SECRET` (optional, default `TOKEN_SECRET`)
 - `PLAYBACK_SIGN_SECRET` (optional, default `CDN_SIGN_SECRET`)
 - `DRM_LICENSE_AUTHORIZATION` (optional static auth header for upstream DRM provider)
+- `ADMIN_API_TOKEN` (optional fallback API auth for `/admin/api/*`)
 
 ```bash
 uv run pywrangler secret put TOKEN_SECRET
 uv run pywrangler secret put CDN_SIGN_SECRET
 uv run pywrangler secret put PLAYBACK_SIGN_SECRET
 uv run pywrangler secret put DRM_LICENSE_AUTHORIZATION
+uv run pywrangler secret put ADMIN_API_TOKEN
 ```
 
 ---
@@ -154,6 +158,13 @@ Then set:
 - `POST|GET|HEAD|OPTIONS /license/<session-token>/<widevine|fairplay|playready>`
 - `GET|HEAD|OPTIONS /certificate/<session-token>/<widevine|fairplay|playready>`
 - `GET /mappings`
+- `GET /admin` (web console, requires admin auth)
+- `GET /admin/api/me`
+- `GET|POST /admin/api/mappings`
+- `DELETE /admin/api/mappings/<uid>`
+- `GET /admin/api/assets?prefix=<prefix>`
+- `POST /admin/api/assets/upload?key=<object-key>`
+- `DELETE /admin/api/assets/<object-key>`
 
 ---
 
@@ -191,3 +202,20 @@ uv run pywrangler deploy
 - HLS supports replacing `__FAIRPLAY_LICENSE_URL__` placeholder at runtime via Worker.
 - HLS also supports `__FAIRPLAY_CERTIFICATE_URL__` placeholder if your packager template uses it.
 - Access control is enforced on every `/play/...` segment request via session token.
+
+---
+
+## Admin console & permission best practice
+
+Recommended auth model (directly using Cloudflare account/identity):
+
+1. In Cloudflare Zero Trust, create an **Access application** for:
+   - `https://nfc.kaasong.com/admin*`
+   - `https://nfc.kaasong.com/admin/api/*`
+2. Policy: allow only your organization users (email / IdP group).
+3. Optionally set `ADMIN_EMAIL_ALLOWLIST` for defense-in-depth.
+
+The backend validates:
+
+- `CF-Access-Authenticated-User-Email` (Cloudflare Access header), or
+- `Authorization: Bearer <ADMIN_API_TOKEN>` for automation scripts.

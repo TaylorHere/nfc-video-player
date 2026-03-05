@@ -22,6 +22,260 @@ MEDIA_CACHE_SECONDS = 3600
 HLS_FAIRPLAY_LICENSE_PLACEHOLDER = "__FAIRPLAY_LICENSE_URL__"
 HLS_FAIRPLAY_CERTIFICATE_PLACEHOLDER = "__FAIRPLAY_CERTIFICATE_URL__"
 HLS_URI_ATTR_PATTERN = re.compile(r'URI="([^"]+)"')
+ADMIN_UI_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NFC 资源管理后台</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; background: #0b1020; color: #e5e7eb; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .card { background: #111a33; border: 1px solid #24345f; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 18px; margin: 0 0 10px; }
+    input, textarea, button { border-radius: 8px; border: 1px solid #334572; background: #0d1730; color: #e5e7eb; padding: 8px 10px; }
+    input, textarea { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    button { cursor: pointer; background: #1f4ae0; border-color: #3366ff; }
+    button.secondary { background: #172443; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #223359; padding: 8px; text-align: left; vertical-align: top; }
+    .muted { color: #95a4c6; font-size: 12px; }
+    .danger { background: #7f1d1d; border-color: #991b1b; }
+    .ok { color: #86efac; }
+    .err { color: #fca5a5; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>NFC 资源管理后台</h1>
+    <div class="muted">基于 Cloudflare Access 鉴权。仅授权用户可访问。</div>
+    <div id="whoami" class="card mono">加载中...</div>
+
+    <div class="card">
+      <h2>映射管理（UID -> 资源/DRM）</h2>
+      <div class="row">
+        <div>
+          <label>UID</label>
+          <input id="uid" placeholder="04999911223344" />
+          <label>默认资源 key（filename）</label>
+          <input id="filename" placeholder="demo/master.m3u8" />
+          <label>名称（可选）</label>
+          <input id="name" placeholder="DRM Card" />
+          <button id="saveMapping">保存映射</button>
+        </div>
+        <div>
+          <label>DRM JSON（可选）</label>
+          <textarea id="drmJson" class="mono" placeholder='{"enabled":true,"hls_manifest":"demo/master.m3u8","licenses":{"widevine":"https://...","fairplay":"https://..."}}'></textarea>
+          <div class="muted">留空表示非 DRM。支持 licenses/certificates/headers 字段。</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;">
+        <button class="secondary" id="refreshMappings">刷新映射列表</button>
+      </div>
+      <div id="mappingMsg" class="mono"></div>
+      <table id="mappingTable">
+        <thead><tr><th>UID</th><th>文件</th><th>名称</th><th>DRM</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>R2 资源管理</h2>
+      <div class="row">
+        <div>
+          <label>前缀过滤</label>
+          <input id="prefix" placeholder="demo/" />
+          <button class="secondary" id="refreshAssets">刷新资源列表</button>
+        </div>
+        <div>
+          <label>上传 key（对象路径）</label>
+          <input id="uploadKey" placeholder="demo/master.m3u8" />
+          <input type="file" id="uploadFile" />
+          <button id="uploadBtn">上传到 R2</button>
+        </div>
+      </div>
+      <div id="assetMsg" class="mono"></div>
+      <table id="assetTable">
+        <thead><tr><th>Key</th><th>大小(bytes)</th><th>更新时间</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const apiBase = "/admin/api";
+
+    function setMsg(id, text, ok = true) {
+      const el = document.getElementById(id);
+      el.className = ok ? "mono ok" : "mono err";
+      el.textContent = text || "";
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(apiBase + path, options);
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) {}
+      if (!res.ok) {
+        const message = (data && (data.error || data.message)) ? (data.error || data.message) : text;
+        throw new Error(message || ("HTTP " + res.status));
+      }
+      return data;
+    }
+
+    function esc(v) {
+      return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    async function loadMe() {
+      try {
+        const data = await api("/me");
+        document.getElementById("whoami").textContent =
+          "已登录: " + (data.email || data.user || "unknown") + " | auth=" + (data.auth || "unknown");
+      } catch (e) {
+        document.getElementById("whoami").textContent = "鉴权失败: " + e.message;
+      }
+    }
+
+    async function loadMappings() {
+      try {
+        const data = await api("/mappings");
+        const rows = Array.isArray(data.items) ? data.items : [];
+        const tbody = document.querySelector("#mappingTable tbody");
+        tbody.innerHTML = rows.map(row => {
+          const drm = row.drm && row.drm.enabled ? "enabled" : "disabled";
+          return "<tr>"
+            + "<td class='mono'>" + esc(row.uid) + "</td>"
+            + "<td class='mono'>" + esc(row.filename) + "</td>"
+            + "<td>" + esc(row.name || "") + "</td>"
+            + "<td>" + drm + "</td>"
+            + "<td><button class='danger' data-del='" + esc(row.uid) + "'>删除</button></td>"
+            + "</tr>";
+        }).join("");
+        tbody.querySelectorAll("button[data-del]").forEach(btn => {
+          btn.onclick = async () => {
+            const uid = btn.getAttribute("data-del");
+            if (!confirm("确认删除映射 " + uid + " ?")) return;
+            try {
+              await api("/mappings/" + encodeURIComponent(uid), { method: "DELETE" });
+              setMsg("mappingMsg", "已删除: " + uid, true);
+              await loadMappings();
+            } catch (e) {
+              setMsg("mappingMsg", "删除失败: " + e.message, false);
+            }
+          };
+        });
+      } catch (e) {
+        setMsg("mappingMsg", "加载映射失败: " + e.message, false);
+      }
+    }
+
+    async function saveMapping() {
+      const uid = document.getElementById("uid").value.trim();
+      const filename = document.getElementById("filename").value.trim();
+      const name = document.getElementById("name").value.trim();
+      const drmRaw = document.getElementById("drmJson").value.trim();
+      if (!uid || !filename) {
+        setMsg("mappingMsg", "UID 和 filename 必填", false);
+        return;
+      }
+      let drm = undefined;
+      if (drmRaw) {
+        try {
+          drm = JSON.parse(drmRaw);
+        } catch (e) {
+          setMsg("mappingMsg", "DRM JSON 解析失败: " + e.message, false);
+          return;
+        }
+      }
+      const payload = { uid, filename };
+      if (name) payload.name = name;
+      if (drm !== undefined) payload.drm = drm;
+      try {
+        await api("/mappings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        setMsg("mappingMsg", "保存成功", true);
+        await loadMappings();
+      } catch (e) {
+        setMsg("mappingMsg", "保存失败: " + e.message, false);
+      }
+    }
+
+    async function loadAssets() {
+      const prefix = document.getElementById("prefix").value.trim();
+      try {
+        const data = await api("/assets" + (prefix ? ("?prefix=" + encodeURIComponent(prefix)) : ""));
+        const rows = Array.isArray(data.items) ? data.items : [];
+        const tbody = document.querySelector("#assetTable tbody");
+        tbody.innerHTML = rows.map(row => {
+          return "<tr>"
+            + "<td class='mono'>" + esc(row.key) + "</td>"
+            + "<td>" + esc(row.size) + "</td>"
+            + "<td>" + esc(row.uploaded || "") + "</td>"
+            + "<td><button class='danger' data-del-asset='" + esc(row.key) + "'>删除</button></td>"
+            + "</tr>";
+        }).join("");
+        tbody.querySelectorAll("button[data-del-asset]").forEach(btn => {
+          btn.onclick = async () => {
+            const key = btn.getAttribute("data-del-asset");
+            if (!confirm("确认删除资源 " + key + " ?")) return;
+            try {
+              await api("/assets/" + encodeURIComponent(key), { method: "DELETE" });
+              setMsg("assetMsg", "已删除: " + key, true);
+              await loadAssets();
+            } catch (e) {
+              setMsg("assetMsg", "删除失败: " + e.message, false);
+            }
+          };
+        });
+      } catch (e) {
+        setMsg("assetMsg", "加载资源失败: " + e.message, false);
+      }
+    }
+
+    async function uploadAsset() {
+      const key = document.getElementById("uploadKey").value.trim();
+      const fileEl = document.getElementById("uploadFile");
+      const file = fileEl.files && fileEl.files[0];
+      if (!key || !file) {
+        setMsg("assetMsg", "请填写 key 并选择文件", false);
+        return;
+      }
+      try {
+        await api("/assets/upload?key=" + encodeURIComponent(key), {
+          method: "POST",
+          headers: {
+            "content-type": file.type || "application/octet-stream",
+            "x-upload-content-type": file.type || "application/octet-stream"
+          },
+          body: file
+        });
+        setMsg("assetMsg", "上传成功: " + key, true);
+        await loadAssets();
+      } catch (e) {
+        setMsg("assetMsg", "上传失败: " + e.message, false);
+      }
+    }
+
+    document.getElementById("saveMapping").onclick = saveMapping;
+    document.getElementById("refreshMappings").onclick = loadMappings;
+    document.getElementById("refreshAssets").onclick = loadAssets;
+    document.getElementById("uploadBtn").onclick = uploadAsset;
+
+    loadMe();
+    loadMappings();
+    loadAssets();
+  </script>
+</body>
+</html>
+"""
 
 
 def _json_response(payload: dict | list, status: int = 200):
@@ -57,7 +311,7 @@ def _text_response(message: str, status: int = 200):
 def _cors_headers() -> dict:
     return {
         "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET,HEAD,POST,OPTIONS",
+        "access-control-allow-methods": "GET,HEAD,POST,DELETE,OPTIONS",
         "access-control-allow-headers": "*",
         "access-control-expose-headers": "*",
         "cache-control": "no-store",
@@ -423,6 +677,78 @@ class Default(WorkerEntrypoint):
 
         self._schema_ready = True
 
+    def _html_response(self, html: str, status: int = 200):
+        return JsResponse.new(
+            html,
+            to_js(
+                {
+                    "status": status,
+                    "headers": {
+                        "content-type": "text/html; charset=utf-8",
+                        "cache-control": "no-store",
+                    },
+                }
+            ),
+        )
+
+    def _admin_allowlist(self) -> set[str]:
+        raw = str(getattr(self.env, "ADMIN_EMAIL_ALLOWLIST", "") or "").strip()
+        if not raw:
+            return set()
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    def _extract_bearer_token(self, request) -> str | None:
+        auth_header = request.headers.get("authorization")
+        if not auth_header:
+            return None
+        auth_header = str(auth_header).strip()
+        if not auth_header.lower().startswith("bearer "):
+            return None
+        token = auth_header[7:].strip()
+        return token or None
+
+    def _authorize_admin(self, request):
+        api_token = str(getattr(self.env, "ADMIN_API_TOKEN", "") or "").strip()
+        bearer_token = self._extract_bearer_token(request)
+        if api_token and bearer_token and hmac.compare_digest(bearer_token, api_token):
+            return {"auth": "api_token", "email": "api-token"}
+
+        email = (
+            request.headers.get("CF-Access-Authenticated-User-Email")
+            or request.headers.get("Cf-Access-Authenticated-User-Email")
+            or request.headers.get("cf-access-authenticated-user-email")
+        )
+        if not email:
+            return None
+
+        email = str(email).strip().lower()
+        if not email:
+            return None
+
+        allowlist = self._admin_allowlist()
+        if allowlist and email not in allowlist:
+            return {"error": "forbidden_email", "email": email}
+
+        return {"auth": "cloudflare_access", "email": email}
+
+    def _admin_unauthorized_response(self):
+        return _json_response(
+            {
+                "error": "admin authorization required",
+                "hint": "Protect /admin with Cloudflare Access and pass CF-Access-Authenticated-User-Email header",
+            },
+            status=401,
+        )
+
+    def _admin_forbidden_response(self):
+        return _json_response(
+            {
+                "error": "forbidden",
+                "hint": "Your email is not in ADMIN_EMAIL_ALLOWLIST",
+            },
+            status=403,
+        )
+
     async def _upsert_mapping(
         self, uid: str, filename: str, name: str | None, drm_config: dict | None
     ) -> dict:
@@ -502,6 +828,86 @@ class Default(WorkerEntrypoint):
                 }
             )
         return mappings
+
+    async def _delete_mapping(self, uid: str) -> bool:
+        uid_normalized = str(uid or "").strip().upper()
+        if not uid_normalized:
+            return False
+        await self.env.DB.prepare("DELETE FROM mappings WHERE uid = ?").bind(uid_normalized).run()
+        return True
+
+    async def _list_assets(self, prefix: str = "", cursor: str | None = None, limit: int = 100):
+        bucket = getattr(self.env, "VIDEO_BUCKET", None)
+        if not bucket:
+            raise ValueError("VIDEO_BUCKET binding is missing")
+
+        options: dict[str, object] = {
+            "limit": max(1, min(limit, 1000)),
+        }
+        if prefix:
+            options["prefix"] = prefix
+        if cursor:
+            options["cursor"] = cursor
+
+        result = await bucket.list(to_js(options))
+        raw_items = _js_to_py(getattr(result, "objects", [])) or []
+        items: list[dict] = []
+        for obj in raw_items:
+            key = str(_field(obj, "key", ""))
+            size = _field(obj, "size")
+            uploaded = _field(obj, "uploaded")
+            items.append(
+                {
+                    "key": key,
+                    "size": int(size) if size is not None else 0,
+                    "uploaded": str(uploaded) if uploaded is not None else None,
+                }
+            )
+
+        return {
+            "items": items,
+            "truncated": bool(getattr(result, "truncated", False)),
+            "cursor": str(getattr(result, "cursor", "")) or None,
+        }
+
+    async def _upload_asset(
+        self,
+        request,
+        key: str,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ):
+        bucket = getattr(self.env, "VIDEO_BUCKET", None)
+        if not bucket:
+            raise ValueError("VIDEO_BUCKET binding is missing")
+
+        body = await request.arrayBuffer()
+        body_len = int(getattr(body, "byteLength", 0))
+        if body_len <= 0:
+            raise ValueError("empty upload body")
+
+        put_options: dict[str, object] = {}
+        http_metadata: dict[str, str] = {}
+        if content_type:
+            http_metadata["contentType"] = content_type
+        if cache_control:
+            http_metadata["cacheControl"] = cache_control
+        if http_metadata:
+            put_options["httpMetadata"] = http_metadata
+
+        if put_options:
+            await bucket.put(key, body, to_js(put_options))
+        else:
+            await bucket.put(key, body)
+
+        return {"key": key, "size": body_len}
+
+    async def _delete_asset(self, key: str):
+        bucket = getattr(self.env, "VIDEO_BUCKET", None)
+        if not bucket:
+            raise ValueError("VIDEO_BUCKET binding is missing")
+        await bucket.delete(key)
+        return {"key": key}
 
     def _play_path(self, session_token: str, object_key: str) -> str:
         return f"/play/{quote(session_token, safe='')}/{quote(object_key, safe='/')}"
@@ -1179,6 +1585,124 @@ class Default(WorkerEntrypoint):
             to_js({"status": status, "headers": response_headers}),
         )
 
+    async def _handle_admin_page(self, request):
+        auth = self._authorize_admin(request)
+        if auth is None:
+            return self._html_response(
+                "<h1>401 Unauthorized</h1><p>Please login via Cloudflare Access.</p>",
+                status=401,
+            )
+        if auth.get("error") == "forbidden_email":
+            return self._html_response(
+                "<h1>403 Forbidden</h1><p>Your email is not allowed.</p>",
+                status=403,
+            )
+        return self._html_response(ADMIN_UI_HTML, status=200)
+
+    async def _handle_admin_api(self, request, admin_subpath: str):
+        method = str(request.method).upper()
+        if method == "OPTIONS":
+            return JsResponse.new("", to_js({"status": 204, "headers": _cors_headers()}))
+
+        auth = self._authorize_admin(request)
+        if auth is None:
+            return self._admin_unauthorized_response()
+        if auth.get("error") == "forbidden_email":
+            return self._admin_forbidden_response()
+
+        subpath = admin_subpath or "/"
+        if not subpath.startswith("/"):
+            subpath = f"/{subpath}"
+
+        if subpath == "/me":
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            return _json_response(
+                {
+                    "ok": True,
+                    "auth": auth.get("auth"),
+                    "email": auth.get("email"),
+                }
+            )
+
+        if subpath == "/mappings":
+            await self._ensure_schema()
+            if method == "GET":
+                items = await self._list_mappings()
+                return _json_response({"items": items})
+            if method == "POST":
+                return await self._handle_map(request)
+            return _text_response("Method Not Allowed", status=405)
+
+        if subpath.startswith("/mappings/"):
+            await self._ensure_schema()
+            if method != "DELETE":
+                return _text_response("Method Not Allowed", status=405)
+            uid = unquote(subpath[len("/mappings/") :]).strip().upper()
+            if not uid:
+                return _json_response({"error": "uid is required"}, status=400)
+            await self._delete_mapping(uid)
+            return _json_response({"success": True, "uid": uid})
+
+        if subpath == "/assets":
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            parsed_url = urlparse(str(request.url))
+            params = parse_qs(parsed_url.query)
+            prefix = str(params.get("prefix", [""])[0] or "").strip()
+            cursor = str(params.get("cursor", [""])[0] or "").strip() or None
+            limit = _clamp_int(params.get("limit", ["100"])[0], 1, 1000, 100)
+            try:
+                result = await self._list_assets(prefix=prefix, cursor=cursor, limit=limit)
+                return _json_response(result)
+            except Exception as err:
+                return _json_response({"error": str(err)}, status=500)
+
+        if subpath == "/assets/upload":
+            if method != "POST":
+                return _text_response("Method Not Allowed", status=405)
+            parsed_url = urlparse(str(request.url))
+            params = parse_qs(parsed_url.query)
+            key_raw = str(params.get("key", [""])[0] or "").strip()
+            if not key_raw:
+                return _json_response({"error": "key query parameter is required"}, status=400)
+            try:
+                key = _safe_object_key(key_raw)
+            except Exception:
+                return _json_response({"error": "invalid key"}, status=400)
+
+            content_type = (
+                request.headers.get("x-upload-content-type")
+                or request.headers.get("content-type")
+                or None
+            )
+            cache_control = request.headers.get("x-upload-cache-control") or None
+            try:
+                result = await self._upload_asset(
+                    request,
+                    key=key,
+                    content_type=str(content_type).strip() if content_type else None,
+                    cache_control=str(cache_control).strip() if cache_control else None,
+                )
+                return _json_response({"success": True, **result})
+            except Exception as err:
+                return _json_response({"error": str(err)}, status=500)
+
+        if subpath.startswith("/assets/"):
+            if method != "DELETE":
+                return _text_response("Method Not Allowed", status=405)
+            key_raw = unquote(subpath[len("/assets/") :]).strip()
+            if not key_raw:
+                return _json_response({"error": "key is required"}, status=400)
+            try:
+                key = _safe_object_key(key_raw)
+                result = await self._delete_asset(key)
+                return _json_response({"success": True, **result})
+            except Exception as err:
+                return _json_response({"error": str(err)}, status=500)
+
+        return _text_response("Not Found", status=404)
+
     async def fetch(self, request):
         method = str(request.method).upper()
         parsed_url = urlparse(str(request.url))
@@ -1186,6 +1710,15 @@ class Default(WorkerEntrypoint):
 
         if path == "/health":
             return _json_response({"ok": True, "runtime": "cloudflare-worker-python"})
+
+        if path in ("/admin", "/admin/"):
+            if method != "GET":
+                return _text_response("Method Not Allowed", status=405)
+            return await self._handle_admin_page(request)
+
+        if path == "/admin/api" or path.startswith("/admin/api/"):
+            subpath = path[len("/admin/api") :]
+            return await self._handle_admin_api(request, subpath)
 
         if path == "/map":
             if method != "POST":
